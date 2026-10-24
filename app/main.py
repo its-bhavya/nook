@@ -28,8 +28,8 @@ from app.mock_data import (
     DISCOVER_PROGRESS_STEPS,
     INVESTIGATE_PROGRESS_STEPS,
     MOCK_CANDIDATES,
-    MOCK_INVESTIGATION,
     MOCK_PROFILE,
+    MOCK_REPORTS,
 )
 
 # ---------------------------------------------------------------------------
@@ -84,6 +84,7 @@ async def build_profile(body: ProfileRequest) -> Profile:
         goals=body.goals,
         hours_per_week=body.hours_per_week,
         spoken_languages=body.spoken_languages,
+        environment_override=body.environment,
     )
 
 
@@ -120,7 +121,7 @@ async def _run_discover_mock(job_id: str) -> None:
         await asyncio.sleep(1)
         job_store.add_event(job_id, step)
     result = [c.model_dump() for c in MOCK_CANDIDATES]
-    job_store.set_done(job_id, result)
+    job_store.set_done_mock(job_id, result)
 
 
 # ---------------------------------------------------------------------------
@@ -142,21 +143,87 @@ async def investigate(body: InvestigateRequest) -> InvestigateResponse:
     job = job_store.create_job(JobKind.investigate)
 
     if settings.demo_mode or not settings.tinyfish_api_key:
-        asyncio.create_task(_run_investigate_mock(job.job_id))
+        asyncio.create_task(_run_investigate_mock(job.job_id, body.issue_url, body.persona_id))
     else:
         asyncio.create_task(
-            job_store.run_investigate_job(job.job_id, body.issue_url, body.profile)
+            job_store.run_investigate_job(job.job_id, body.issue_url, body.profile, body.persona_id)
         )
 
     return InvestigateResponse(job_id=job.job_id)
 
 
-async def _run_investigate_mock(job_id: str) -> None:
+async def _run_investigate_mock(job_id: str, issue_url: str, persona_id: str | None) -> None:
+    """
+    Serve an in-process mock report for demo mode.
+    Keyed by issue_url — fails with a clear error if the URL is not in MOCK_REPORTS.
+    If persona_id is provided and a saved real-run file exists, that takes precedence
+    (from_cache=True); otherwise the in-process mock is used (mock=True).
+    """
+    from app.demo_results import load_investigate_result
+
+    # Prefer a saved real-run file when persona_id is supplied
+    if persona_id:
+        saved = load_investigate_result(issue_url, persona_id)
+        if saved is not None:
+            job_store.set_running(job_id)
+            for step in INVESTIGATE_PROGRESS_STEPS:
+                await asyncio.sleep(1)
+                job_store.add_event(job_id, step)
+            job_store.set_done_cached(job_id, saved["result"], saved["generated_at"])
+            return
+
+    report = MOCK_REPORTS.get(issue_url)
+    if report is None:
+        job_store.set_running(job_id)
+        job_store.set_failed(
+            job_id,
+            f"No mock report available for {issue_url!r}. "
+            "Run scripts/prerun.py to generate saved results, or use one of the known demo URLs.",
+        )
+        return
+
     job_store.set_running(job_id)
     for step in INVESTIGATE_PROGRESS_STEPS:
         await asyncio.sleep(1)
         job_store.add_event(job_id, step)
-    job_store.set_done(job_id, MOCK_INVESTIGATION.model_dump())
+    job_store.set_done_mock(job_id, report.model_dump())
+
+
+# ---------------------------------------------------------------------------
+# GET /demo/inputs
+# ---------------------------------------------------------------------------
+
+@app.get(
+    "/demo/inputs",
+    tags=["demo"],
+    summary="Return personas, demo queries and demo issue URLs for the frontend demo flow",
+)
+def demo_inputs():
+    """
+    Returns static demo configuration read from data/.
+    Personas include the full Profile so the frontend can pre-populate the profile form.
+    """
+    import json as _json
+    from pathlib import Path
+
+    data_dir = Path(__file__).parent.parent / "data"
+
+    def _read(name: str):
+        p = data_dir / name
+        if not p.exists():
+            return []
+        return _json.loads(p.read_text(encoding="utf-8"))
+
+    personas = _read("personas.json")
+    demo_queries = _read("demo_queries.json")
+    raw_urls = _read("demo_issue_urls.json")
+    demo_issue_urls = [entry["url"] if isinstance(entry, dict) else entry for entry in raw_urls]
+
+    return {
+        "personas": personas,
+        "demo_queries": demo_queries,
+        "demo_issue_urls": demo_issue_urls,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -194,7 +261,7 @@ async def investigate_batch(body: BatchInvestigateRequest) -> BatchInvestigateRe
     for issue_url in body.issue_urls:
         job = job_store.create_job(JobKind.investigate)
         if settings.demo_mode or not settings.tinyfish_api_key:
-            asyncio.create_task(_run_investigate_mock(job.job_id))
+            asyncio.create_task(_run_investigate_mock(job.job_id, issue_url, None))
         else:
             asyncio.create_task(
                 job_store.run_investigate_job(job.job_id, issue_url, body.profile)
@@ -274,8 +341,7 @@ async def _sse_generator(job_id: str):
             return
 
         if job.status.value == "failed":
-            last_msg = job.events[-1].message if job.events else "Unknown error"
-            yield _sse_event({"type": "failed", "message": last_msg})
+            yield _sse_event({"type": "failed", "message": job.error or "Unknown error"})
             return
 
         await asyncio.sleep(_POLL_INTERVAL)

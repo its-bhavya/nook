@@ -1,0 +1,51 @@
+[
+  {
+    "id": "persona-a",
+    "name": "Persona A",
+    "description": "Python developer experienced in FastAPI, RAG and LLM agent frameworks. Interested in evaluation tooling. Available ~6 hours/week.",
+    "profile": {
+      "skills": [
+        {"name": "Python",       "level": "experienced", "evidence": "5+ years, primary language"},
+        {"name": "FastAPI",      "level": "experienced", "evidence": "Built production RAG service"},
+        {"name": "RAG",          "level": "experienced", "evidence": "ChromaDB + LangChain project"},
+        {"name": "ChromaDB",     "level": "experienced", "evidence": "Vector store in main project"},
+        {"name": "DSPy",         "level": "familiar",    "evidence": "Used in evaluation pipeline"},
+        {"name": "MLflow",       "level": "familiar",    "evidence": "Experiment tracking"},
+        {"name": "Hugging Face", "level": "familiar",    "evidence": "Fine-tuning transformers"},
+        {"name": "TypeScript",   "level": "inferred",    "evidence": "Mentioned in resume skills list"}
+      ],
+      "interests": ["LLM agents", "RAG", "evaluation frameworks", "open-source tooling"],
+      "goals": "Find a first contribution that is small enough to ship in a weekend but teaches me how a real agent framework is structured",
+      "hours_per_week": 6,
+      "spoken_languages": ["English", "Hindi"],
+      "environment": {
+        "has_llm_api_keys": ["Gemini", "OpenAI"],
+        "os": "macOS"
+      }
+    }
+  },
+  {
+    "id": "persona-b",
+    "name": "Persona B",
+    "description": "React/TypeScript frontend developer. English only. No LLM API keys. Interested in frontend tooling and developer experience. Available ~4 hours/week.",
+    "profile": {
+      "skills": [
+        {"name": "React",       "level": "experienced", "evidence": "Built several production SPAs"},
+        {"name": "TypeScript",  "level": "experienced", "evidence": "Primary language for all recent projects"},
+        {"name": "CSS",         "level": "experienced", "evidence": "Responsive layouts, design systems"},
+        {"name": "Vite",        "level": "familiar",    "evidence": "Uses Vite for local dev on personal projects"},
+        {"name": "Jest",        "level": "familiar",    "evidence": "Unit tests for React components"},
+        {"name": "Node.js",     "level": "familiar",    "evidence": "Simple Express APIs alongside frontend work"},
+        {"name": "Python",      "level": "inferred",    "evidence": "Occasional scripting, no project experience"}
+      ],
+      "interests": ["frontend tooling", "developer experience", "component libraries", "accessibility"],
+      "goals": "Find a small, well-scoped frontend or tooling issue where I can make a real improvement without needing backend knowledge",
+      "hours_per_week": 4,
+      "spoken_languages": ["English"],
+      "environment": {
+        "has_llm_api_keys": [],
+        "os": "Windows"
+      }
+    }
+  }
+]

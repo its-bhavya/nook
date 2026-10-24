@@ -4,9 +4,8 @@ import { ExternalLink, Loader2, MessageSquare, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ProgressSteps, Tag } from "@/components/nook/bits";
 import { useJob } from "@/hooks/use-job";
-import { isDemoJob, startInvestigate } from "@/lib/api";
+import { startInvestigate } from "@/lib/api";
 import { addInvestigation, setState, useNook } from "@/lib/store";
-import { PERSONA_A } from "@/mock/demo";
 import type { Candidate } from "@/lib/types";
 
 export const Route = createFileRoute("/results/$jobId")({
@@ -20,19 +19,6 @@ export const Route = createFileRoute("/results/$jobId")({
   }),
   component: ResultsPage,
 });
-
-const CLAIM_TEXT: Record<Candidate["claimant_signal"], string> = {
-  none: "No one has claimed it",
-  claimed: "Someone has said they're working on it",
-  linked_pr: "A pull request is already linked",
-};
-
-function reasonFor(c: Candidate) {
-  const parts = [c.source === "aggregator" ? "Found on an issue aggregator" : "Matched your GitHub search"];
-  if (c.labels.length) parts.push(`labeled “${c.labels[0]}”`);
-  parts.push(c.comments <= 5 ? "with a short discussion" : "with an active discussion");
-  return parts.join(", ") + ".";
-}
 
 function ResultsPage() {
   const { jobId } = Route.useParams();
@@ -50,17 +36,15 @@ function ResultsPage() {
     }
   }, [job.result]);
 
-  const demo = isDemoJob(jobId);
   const investigate = async (c: Candidate) => {
-    const p = profile ?? (demo ? PERSONA_A : null);
-    if (!p) {
+    if (!profile) {
       setInvError("Your profile isn't loaded anymore. Go back and build it again to investigate.");
       return;
     }
     setInvError(null);
     setPending(c.url);
     try {
-      const { job_id } = await startInvestigate(c.url, p, demo);
+      const { job_id } = await startInvestigate(c.url, profile);
       addInvestigation({ jobId: job_id, url: c.url, title: c.title, repo: c.repo });
       navigate({ to: "/investigate/$jobId", params: { jobId: job_id } });
     } catch (e) {
@@ -76,7 +60,13 @@ function ResultsPage() {
         Issues worth a <span className="keyword">closer look</span>
       </h1>
 
-      <ProgressSteps title="Discovery progress" events={job.events} phase={job.phase} reconnecting={job.reconnecting} />
+      <ProgressSteps
+        title="Discovery progress"
+        events={job.events}
+        phase={job.phase}
+        reconnecting={job.reconnecting}
+        kind="discover"
+      />
 
       {investigations.length > 0 && (
         <div className="mt-6 rounded-xl bg-night p-4">
@@ -105,15 +95,6 @@ function ResultsPage() {
           <p className="mt-2 text-sm text-muted-foreground">{job.error}</p>
           <div className="mt-4 flex flex-wrap gap-3">
             <Button onClick={job.retry}>Retry</Button>
-            <Button
-              variant="outline"
-              onClick={() => {
-                setState({ demo: true });
-                navigate({ to: "/results/$jobId", params: { jobId: "demo-discover" } });
-              }}
-            >
-              Switch to demo mode
-            </Button>
           </div>
         </div>
       )}
@@ -148,15 +129,41 @@ function ResultsPage() {
                       github.com <ExternalLink className="size-3" />
                     </a>
                   </div>
+
+                  {/* Labels + theme tag */}
                   <div className="mt-3 flex flex-wrap gap-2">
                     {c.labels.map((l) => <Tag key={l} tone="violet">{l}</Tag>)}
+                    {c.theme && <Tag tone="default">{c.theme}</Tag>}
                   </div>
-                  <div className="mt-4 flex flex-wrap gap-x-6 gap-y-1 text-sm text-muted-foreground">
-                    <span>Opened {c.opened}</span>
-                    <span className="inline-flex items-center gap-1"><MessageSquare className="size-3" /> {c.comments} comments</span>
-                    <span className={c.claimant_signal === "none" ? "text-lime" : "text-pink"}>{CLAIM_TEXT[c.claimant_signal]}</span>
+
+                  {/* Matched skills chips */}
+                  {c.matched_skills.length > 0 && (
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                      {c.matched_skills.map((s) => (
+                        <span
+                          key={s}
+                          className="inline-flex items-center rounded-full border border-lime/40 bg-lime/10 px-2 py-0.5 text-xs text-lime"
+                        >
+                          {s}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Reason chip */}
+                  {c.reason && (
+                    <p className="mt-3 rounded-md bg-night px-3 py-2 text-xs text-muted-foreground italic">
+                      {c.reason}
+                    </p>
+                  )}
+
+                  <div className="mt-3 flex flex-wrap gap-x-6 gap-y-1 text-sm text-muted-foreground">
+                    <span>{c.opened ? `Opened ${c.opened}` : "Date not available"}</span>
+                    <span className="inline-flex items-center gap-1">
+                      <MessageSquare className="size-3" /> {c.comments} comments
+                    </span>
                   </div>
-                  <p className="mt-3 text-sm">{reasonFor(c)}</p>
+
                   <Button className="mt-5" onClick={() => investigate(c)} disabled={pending === c.url}>
                     {pending === c.url && <Loader2 className="animate-spin" />}
                     Investigate this issue

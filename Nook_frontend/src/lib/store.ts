@@ -10,7 +10,6 @@ export interface InvestigationEntry {
 }
 
 interface State {
-  demo: boolean;
   profile: Profile | null;
   candidates: Record<string, Candidate>;
   investigations: InvestigationEntry[];
@@ -18,7 +17,6 @@ interface State {
 }
 
 let state: State = {
-  demo: true,
   profile: null,
   candidates: {},
   investigations: [],

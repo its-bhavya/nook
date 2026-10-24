@@ -1,0 +1,42 @@
+[
+  {
+    "url": "https://github.com/stanfordnlp/dspy/issues/9074",
+    "note": "Trap: issue closed Aug 7 2026 — fix merged in PR #9073, PR #9448 closed as duplicate"
+  },
+  {
+    "url": "https://github.com/cubrid-lab/cubrid-cookbook-python/issues/447",
+    "note": "Trap: labeled beginner-friendly but linked PR already open"
+  },
+  {
+    "url": "https://github.com/supabase-community/supabase-py/issues/1809",
+    "note": "Trap: block of issues claimed by one user"
+  },
+  {
+    "url": "https://github.com/confident-ai/deepeval/issues/3516",
+    "note": "Trap: personal mismatch — topic relevant but issue is TypeScript"
+  },
+  {
+    "url": "https://github.com/AstrBotDevs/AstrBot/issues/10720",
+    "note": "Trap: hidden scope — thread in Chinese, more schema fields expected to break"
+  },
+  {
+    "url": "https://github.com/pydantic/pydantic-ai/issues/11061",
+    "note": "Good fit: LLM-API error handling, clear scope, fast maintainer replies"
+  },
+  {
+    "url": "https://github.com/NVIDIA/garak/issues/2336",
+    "note": "Good fit: small self-contained Python typing fix"
+  },
+  {
+    "url": "https://github.com/vectorize-io/hindsight/issues/5981",
+    "note": "Good fit: agent-memory tooling close to Persona A background — confirm language"
+  },
+  {
+    "url": "https://github.com/chroma-core/chroma/issues/2292",
+    "note": "Stale / low-signal: vague umbrella issue, weak maintainer signal — verify state"
+  },
+  {
+    "url": "https://github.com/ArduCAM/Arducam_tof_camera/issues/125",
+    "note": "Stale / low-signal: weak maintainer signal — verify state"
+  }
+]

@@ -1,8 +1,10 @@
-// All network access lives here. Point the app at the real backend by changing API_BASE_URL.
+// All network access lives here. Point the app at the real backend via VITE_API_URL.
 import type { Candidate, JobEvent, JobStatus, Profile, ProfileRequest, Report } from "./types";
-import { DEMO_PREFIX, demoJob, demoDiscoverJobId, demoInvestigateJobId, PERSONA_A } from "@/mock/demo";
 
-export const API_BASE_URL = "http://localhost:8000";
+export const API_BASE_URL =
+  (typeof import.meta !== "undefined" && (import.meta as Record<string, unknown>).env
+    ? ((import.meta as unknown as { env: Record<string, string> }).env.VITE_API_URL)
+    : undefined) ?? "http://localhost:8000";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let res: Response;
@@ -28,26 +30,18 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-export const isDemoJob = (id: string) => id.startsWith(DEMO_PREFIX);
-
-export async function buildProfile(body: ProfileRequest, demo: boolean): Promise<Profile> {
-  if (demo) {
-    await new Promise((r) => setTimeout(r, 700));
-    return structuredClone(PERSONA_A);
-  }
+export async function buildProfile(body: ProfileRequest): Promise<Profile> {
   return request<Profile>("/profile", { method: "POST", body: JSON.stringify(body) });
 }
 
-export async function startDiscover(profile: Profile, query: string | null, demo: boolean) {
-  if (demo) return { job_id: demoDiscoverJobId() };
+export async function startDiscover(profile: Profile, query: string | null) {
   return request<{ job_id: string }>("/discover", {
     method: "POST",
     body: JSON.stringify(query ? { profile, query } : { profile }),
   });
 }
 
-export async function startInvestigate(issue_url: string, profile: Profile, demo: boolean) {
-  if (demo) return { job_id: demoInvestigateJobId(issue_url) };
+export async function startInvestigate(issue_url: string, profile: Profile) {
   return request<{ job_id: string }>("/investigate", {
     method: "POST",
     body: JSON.stringify({ issue_url, profile }),
@@ -55,7 +49,6 @@ export async function startInvestigate(issue_url: string, profile: Profile, demo
 }
 
 export async function getJob<T = Candidate[] | Report>(id: string): Promise<JobStatus<T>> {
-  if (isDemoJob(id)) return demoJob(id) as JobStatus<T>;
   return request<JobStatus<T>>(`/jobs/${encodeURIComponent(id)}`);
 }
 
@@ -66,30 +59,12 @@ export interface StreamHandlers {
   onReconnecting: () => void;
 }
 
-/** Streams job progress. On SSE drop, reports "reconnecting" and falls back to polling GET /jobs/{id}. */
+/** Streams job progress via SSE. On drop, reports "reconnecting" and falls back to polling. */
 export function streamJob(id: string, h: StreamHandlers): () => void {
   let closed = false;
   const timers: ReturnType<typeof setTimeout>[] = [];
-
-  if (isDemoJob(id)) {
-    const job = demoJob(id);
-    job.events.forEach((e, i) => {
-      timers.push(setTimeout(() => !closed && h.onEvent(e), 600 * (i + 1)));
-    });
-    timers.push(
-      setTimeout(() => {
-        if (closed) return;
-        if (job.status === "failed") h.onFailed(job.error || "The demo job failed.");
-        else h.onDone();
-      }, 600 * (job.events.length + 1)),
-    );
-    return () => {
-      closed = true;
-      timers.forEach(clearTimeout);
-    };
-  }
-
   let seen = 0;
+
   const poll = async () => {
     if (closed) return;
     try {
@@ -104,10 +79,11 @@ export function streamJob(id: string, h: StreamHandlers): () => void {
     timers.push(setTimeout(poll, 2000));
   };
 
+  interface SseMsg { type?: string; message: string; timestamp: string; }
   const es = new EventSource(`${API_BASE_URL}/jobs/${encodeURIComponent(id)}/stream`);
   es.onmessage = (msg) => {
     try {
-      const e = JSON.parse(msg.data) as JobEvent;
+      const e = JSON.parse(msg.data) as SseMsg;
       if (e.type === "done") {
         es.close();
         h.onDone();
@@ -116,7 +92,7 @@ export function streamJob(id: string, h: StreamHandlers): () => void {
         h.onFailed(e.message);
       } else {
         seen += 1;
-        h.onEvent(e);
+        h.onEvent({ message: e.message, timestamp: e.timestamp });
       }
     } catch {
       /* ignore malformed */

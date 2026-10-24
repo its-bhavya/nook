@@ -38,7 +38,7 @@ function Label({ htmlFor, children, hint }: { htmlFor?: string; children: React.
 
 function ProfilePage() {
   const navigate = useNavigate();
-  const { demo, profile } = useNook();
+  const { profile } = useNook();
   const [resume, setResume] = useState("");
   const [github, setGithub] = useState("");
   const [interests, setInterests] = useState<string[]>([]);
@@ -58,24 +58,21 @@ function ProfilePage() {
 
   const onBuild = async () => {
     setError(null);
-    if (!demo && !resume.trim()) {
+    if (!resume.trim()) {
       setError("Paste your resume text first, so Nook has something to read.");
       return;
     }
     setBuilding(true);
     try {
-      const p = await buildProfile(
-        {
-          resume_text: resume,
-          github_url: github.trim() || null,
-          interests,
-          goals: [goals.trim(), `Willingness to learn: ${learn}`].filter(Boolean).join("\n"),
-          hours_per_week: Math.max(1, hours),
-          spoken_languages: languages,
-          environment: { has_llm_api_keys: keys, os: os.trim() || null },
-        },
-        demo,
-      );
+      const p = await buildProfile({
+        resume_text: resume,
+        github_url: github.trim() || null,
+        interests,
+        goals: [goals.trim(), `Willingness to learn: ${learn}`].filter(Boolean).join("\n"),
+        hours_per_week: Math.max(1, hours),
+        spoken_languages: languages,
+        environment: { has_llm_api_keys: keys, os: os.trim() || null },
+      });
       setProfile(p);
     } catch (e) {
       setError(`Couldn't build your profile. ${e instanceof Error ? e.message : ""}`);
@@ -93,7 +90,7 @@ function ProfilePage() {
     }
     setFinding(true);
     try {
-      const { job_id } = await startDiscover(profile, mode === "search" ? query.trim() : null, demo);
+      const { job_id } = await startDiscover(profile, mode === "search" ? query.trim() : null);
       setState({ lastDiscoverJob: job_id });
       navigate({ to: "/results/$jobId", params: { jobId: job_id } });
     } catch (e) {
@@ -112,18 +109,6 @@ function ProfilePage() {
         <p className="mt-6 max-w-2xl text-lg leading-8 text-muted-foreground">
           Tell Nook who you are. It finds issues, then investigates whether one is actually right for you.
         </p>
-        <label className="mt-8 inline-flex cursor-pointer items-center gap-3 rounded-xl bg-night px-4 py-3">
-          <input
-            type="checkbox"
-            className="size-4 accent-lime"
-            checked={demo}
-            onChange={(e) => setState({ demo: e.target.checked })}
-          />
-          <span className="text-sm font-semibold">Demo mode</span>
-          <span className="text-xs text-muted-foreground">
-            {demo ? "Uses pre-saved results, no server needed" : "Calls the live Nook server"}
-          </span>
-        </label>
       </section>
 
       <div className="panel grid gap-6 md:grid-cols-2">
@@ -136,7 +121,7 @@ function ProfilePage() {
             className="field min-h-48 font-mono text-sm"
             value={resume}
             onChange={(e) => setResume(e.target.value)}
-            placeholder={demo ? "Optional in demo mode. Persona A will be used." : "Paste your resume as plain text…"}
+            placeholder="Paste your resume as plain text…"
           />
         </div>
         <div>
@@ -189,11 +174,6 @@ function ProfilePage() {
       {error && (
         <p role="alert" className="mt-6 rounded-xl border border-pink bg-night px-4 py-3 text-sm text-pink">
           {error}
-          {!demo && (
-            <button className="ml-2 underline" onClick={() => { setState({ demo: true }); setError(null); }}>
-              Switch to demo mode
-            </button>
-          )}
         </p>
       )}
 

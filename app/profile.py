@@ -16,7 +16,7 @@ from __future__ import annotations
 import re
 
 from app.llm import generate_json
-from app.models import Environment, Profile, Skill, SkillLevel
+from app.models import Environment, EnvironmentOverride, Profile, Skill, SkillLevel
 
 # ---------------------------------------------------------------------------
 # PII scrubbers
@@ -97,6 +97,7 @@ async def build_profile(
     goals: str,
     hours_per_week: int,
     spoken_languages: list[str],
+    environment_override: EnvironmentOverride | None = None,
 ) -> Profile:
     """
     Build a structured Profile from resume text and user-supplied preferences.
@@ -104,6 +105,7 @@ async def build_profile(
     - Strips PII (email, phone) before processing.
     - Does not call GitHub APIs; github_url is stored as-is.
     - Classifies skills into experienced / familiar / inferred tiers.
+    - environment_override fields win over anything the LLM might have guessed.
     """
     clean_resume = _strip_pii(resume_text)
     prompt = _build_extraction_prompt(clean_resume)
@@ -123,6 +125,13 @@ async def build_profile(
         has_llm_api_keys=[],
         os=None,
     )
+
+    # User-supplied values override whatever the LLM produced
+    if environment_override is not None:
+        if environment_override.has_llm_api_keys is not None:
+            environment.has_llm_api_keys = environment_override.has_llm_api_keys
+        if environment_override.os is not None:
+            environment.os = environment_override.os
 
     return Profile(
         skills=skills,

@@ -41,9 +41,35 @@ OpenAPI JSON (for the frontend tool): http://localhost:8000/openapi.json
 
 ## Demo mode
 
-Set `DEMO_MODE=true` in `.env` to skip all live agent calls and return
-realistic saved results. Useful when presenting or when API keys are not
-available.
+Set `DEMO_MODE=true` in `.env` to skip all live agent calls and serve saved results.
+
+There are two layers of demo data:
+
+**Mock data** (`mock=true` on `JobStatus`) — in-process data from `app/mock_data.py`. Available immediately with no pre-run step. Only the DSPy #9074 report (Persona A) is included. Any other issue URL returns an error in mock mode.
+
+**Saved real-run results** (`from_cache=true` on `JobStatus`) — JSON files in `data/demo_results/` produced by `scripts/prerun.py`. These are real TinyFish runs saved ahead of the demo. They take precedence over mock data when `persona_id` is supplied.
+
+### Generating saved results with prerun.py
+
+```bash
+# Run all demo issues for all personas and write to data/demo_results/
+python scripts/prerun.py
+```
+
+File naming convention (set by the script, consumed by `app/demo_results.py`):
+```
+data/demo_results/investigate_<persona_id>_<url_slug>.json   # per-persona reports
+data/demo_results/discover_<query_slug>.json                  # discovery results
+```
+
+Each file contains:
+```json
+{ "generated_at": "<ISO 8601>", "result": <InvestigationReport | CandidateIssue[]> }
+```
+
+The replay lookup key for `POST /investigate` is `(issue_url, persona_id)`. Pass `persona_id` in the request body to get the persona-specific saved report. Omit it to fall back to mock data (DSPy only) or a live run.
+
+Re-run `scripts/prerun.py` on the morning of the demo to refresh results in case issue state has changed.
 
 ## Endpoints
 
@@ -52,9 +78,11 @@ available.
 | GET | `/health` | Liveness check |
 | POST | `/profile` | Resume text → structured Profile |
 | POST | `/discover` | Profile + query → `job_id` |
-| POST | `/investigate` | Issue URL + profile → `job_id` |
+| POST | `/investigate` | Issue URL + profile + optional `persona_id` → `job_id` |
+| POST | `/investigate/batch` | Multiple issue URLs → list of `job_id`s |
 | GET | `/jobs/{id}/stream` | SSE progress stream |
 | GET | `/jobs/{id}` | Job status + result |
+| GET | `/demo/inputs` | Personas, demo queries and demo issue URLs |
 
 ## Testing the mock flow
 

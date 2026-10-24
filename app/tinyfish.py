@@ -80,7 +80,12 @@ def _headers() -> dict[str, str]:
     return {"X-API-Key": key, "Content-Type": "application/json"}
 
 
-def _build_body(goal: str, url: str, output_schema: dict | None, timeout_s: int) -> dict:
+def _build_body(
+    goal: str,
+    url: str,
+    output_schema: dict | None,
+    timeout_s: int,
+) -> dict:
     body: dict[str, Any] = {
         "url": url,
         "goal": goal,
@@ -134,10 +139,6 @@ async def _run_sse(
     timeout_s: int,
     on_event: Callable[[str], Coroutine | None] | None,
 ) -> TinyFishResult:
-    """
-    Call /run-sse and forward PROGRESS events to on_event.
-    Parses the SSE stream line-by-line; no SDK dependency.
-    """
     body = _build_body(goal, url, output_schema, timeout_s)
     t0 = time.monotonic()
     run_id: str | None = None
@@ -270,20 +271,15 @@ async def run_tinyfish(
         goal:          Natural-language instruction for the agent.
         url:           Target page URL.
         output_schema: Optional JSON-schema object for structured output.
-                       Must follow TinyFish schema rules (see docs/tinyfish_notes.md).
         timeout_s:     Client-side wall-clock timeout in seconds.
                        Defaults to TINYFISH_TIMEOUT from config.
-        on_event:      Optional async or sync callable called with each PROGRESS
-                       message string as the agent works. Use to forward live
-                       updates to the Nook SSE stream.
+        max_steps:     Optional step cap passed to agent_config.max_steps.
+                       Use a small value (e.g. 40) for simple single-page extractions
+                       to cut latency significantly. None uses the TinyFish default (150).
+        on_event:      Optional async or sync callable called with each PROGRESS message.
 
     Returns:
         TinyFishResult with ok, raw_result, parsed_result, error, elapsed_s.
-
-    Retry policy:
-        Up to 2 retries for transient errors (5xx, SYSTEM_FAILURE, UNKNOWN).
-        Never retries AGENT_FAILURE or BILLING_FAILURE.
-        Never retries a run that completed but returned unexpected data.
     """
     settings = get_settings()
     effective_timeout = timeout_s if timeout_s is not None else settings.tinyfish_timeout
@@ -304,8 +300,6 @@ async def run_tinyfish(
             if result.ok:
                 return result
 
-            # Decide whether to retry
-            # Parse category from error string if possible (full error object not always available here)
             should_retry = (
                 attempt < max_attempts - 1
                 and _should_retry_result(result)

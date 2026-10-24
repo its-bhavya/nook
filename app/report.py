@@ -4,9 +4,8 @@ Report builder for Nook.
 Public interface:
     build_report(profile, evidence_bundle) -> InvestigationReport
 
-One LLM call with a strict output schema.  After the call a post-processing
-check removes any sources_say item whose source_url is not in the bundle and
-appends a note to unknowns for each item removed.
+One LLM call. Post-processing removes any sources_say item whose source_url
+is not in the bundle and appends a note to unknowns for each removal.
 """
 from __future__ import annotations
 
@@ -20,7 +19,9 @@ from app.models import (
     FitAssessment,
     FitLevel,
     InvestigationReport,
+    IssueStatus,
     PRState,
+    Prerequisite,
     Profile,
     RelatedPR,
     SourceClaim,
@@ -33,48 +34,68 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _SYSTEM_PROMPT = """You are Nook, a contributor-matching assistant.
-Your job is to write a personalised investigation report that helps a developer
-decide whether to take a GitHub issue.
+Write a personalised investigation report so a developer can decide whether to
+take a GitHub issue. Follow every rule below exactly.
 
-Rules you must follow exactly:
+SUMMARY
+- ≤30 words. Format: "<Good|Possible|Weak> match: <why>. Main risk: <one risk or none>."
+- Derive "Good/Possible/Weak" from fit.level.
 
-SOURCES_SAY
-- May contain only claims that appear in the evidence_bundle findings.
-- Every item must include its source_url exactly as it appears in the bundle.
-- Do not add anything else here. Do not invent claims or URLs.
+ISSUE_STATUS
+- state must be exactly one of: open | closed | claimed | has_open_pr | unknown
+- note: one plain-English sentence explaining the state.
+- source_url: a URL from the bundle, or null.
+- closed or has_merged_pr → state "closed"; active claim or open competing PR → "claimed"
+  or "has_open_pr"; otherwise "open" or "unknown".
+
+FIT (fit.level + fit.reasoning)
+- Describe ONLY how well the issue's requirements match the person's skills, interests,
+  spoken languages, and hours_per_week.
+- Cite 2–3 concrete profile facts vs 2–3 issue requirements.
+- NEVER mention issue state, activity signals, claims, or PRs here — those belong in
+  issue_status and blockers.
+- level must be exactly one of: strong | possible | weak.
+
+SOURCES_SAY (5–7 items maximum)
+- Only facts that change a decision:
+    * scope and acceptance criteria (1–2 items)
+    * existing files or code the contributor must touch or read (if found)
+    * the competing PR or claim state (ONE item, only if relevant)
+    * repo activity (ONE item)
+    * a relevant precedent PR if any
+- Every item: ≤25 words, source_url from the bundle exactly.
+- No label restatements, no "zero comments", no duplicates.
 
 INTERPRETATION
-- Holds Nook's inferences about fit, written as inference ("This probably requires…").
-- May draw on the developer profile (skills, spoken_languages, hours_per_week,
-  environment, interests, goals).
+- Nook's inferences about fit. Use hedge language ("This probably…", "It seems…").
 - Do NOT present inferences as facts.
 
-UNKNOWNS
-- Must include every item from the bundle's unknowns list (copy them verbatim).
-- Also add anything the report itself cannot support from the evidence.
+PREREQUISITES (3–6 items)
+- Concrete things the contributor needs: skills, tools, setup commands, APIs to learn,
+  files to read — taken from issue body and repo.
+- For each item set status to:
+    "have"    if the profile already lists this skill at experienced/familiar
+    "learn"   if the profile does not list it, or lists it only as inferred
+    "unknown" if there is not enough information
+- NEVER include facts about comments, labels or PRs as prerequisites.
 
-FIT LEVEL
-- Must be exactly one of: strong | possible | weak
-- Do NOT output a numeric score.
-- Reasoning must be plain language that explicitly names the profile facts used
-  (e.g. specific skills, spoken_languages, hours_per_week, tools, API keys).
+BLOCKERS (may be empty)
+- Only things that would STOP or seriously SLOW this specific person:
+    already fixed/closed, claimed by an active contributor, open competing PR,
+    inaccessible requirements (paid API, special hardware, a language they can't speak),
+    scope too large for their hours_per_week, no maintainer activity for 90+ days.
+- Missing PRs, zero comments and "good first issue" labels are NOT blockers.
+- An empty list is valid and expected.
 
-ALREADY RESOLVED
-- If the bundle says already_resolved is true, say so first in the fit reasoning.
-- Explain what the developer should do instead:
-  check whether the fix is complete, close or comment on the issue if appropriate,
-  or pick a different issue.
+UNKNOWNS (≤3 items, may be empty)
+- Only unverified things that would materially change the decision.
+- Do NOT list missing timestamps, "no maintainer replies yet" on a new issue,
+  or generic caveats.
+- An empty list is valid.
 
-BLOCKERS
-- Must be specific to this developer.
-- Consider: language of the thread vs spoken_languages in the profile,
-  required accounts or services vs environment.has_llm_api_keys / os,
-  estimated scope vs hours_per_week.
-
-FIRST_STEPS
-- Must be concrete: name files or pages to read, describe how to reproduce the issue.
-- Every first step must be based on a sourced finding from the bundle.
-- If a step cannot be sourced, say "A first step is to confirm [X]".
+FIRST_STEPS (exactly 3)
+- Concrete: name specific files, pages, or commands. Base each step on a sourced finding.
+- If a step cannot be sourced, write "Confirm [X] before starting."
 
 URLS
 - Never invent URLs. Every URL in the report must come from the bundle.
@@ -86,42 +107,45 @@ URLS
 
 
 def _build_prompt(profile: Profile, bundle: EvidenceBundle) -> str:
-    profile_lines = [
-        f"skills: {', '.join(f'{s.name} ({s.level.value})' for s in profile.skills)}",
+    skill_lines = ", ".join(f"{s.name} ({s.level.value})" for s in profile.skills)
+    profile_block = "\n".join([
+        f"skills: {skill_lines}",
         f"spoken_languages: {', '.join(profile.spoken_languages) or 'not specified'}",
         f"hours_per_week: {profile.hours_per_week}",
         f"llm_api_keys: {', '.join(profile.environment.has_llm_api_keys) or 'none'}",
         f"os: {profile.environment.os or 'not specified'}",
         f"interests: {', '.join(profile.interests) or 'not specified'}",
         f"goals: {profile.goals}",
-    ]
+    ])
 
-    finding_lines = []
-    for f in bundle.findings:
-        src = f.source_url or "no source"
-        finding_lines.append(f"  [{f.kind}] {f.claim}  (source: {src})")
+    finding_lines = "\n".join(
+        f"  [{f.kind}] {f.claim}  (source: {f.source_url or 'no source'})"
+        for f in bundle.findings
+    ) or "  (none)"
 
-    pr_lines = [
+    pr_lines = "\n".join(
         f"  {pr.url} — {pr.state}" + (f" — {pr.note}" if pr.note else "")
         for pr in bundle.related_prs
-    ]
+    ) or "  (none)"
 
-    activity_lines = [
+    activity_lines = "\n".join(
         f"  {sig.signal}  (source: {sig.source_url or 'no source'})"
         for sig in bundle.activity_signals
-    ]
+    ) or "  (none)"
 
-    claim_lines = [
+    claim_lines = "\n".join(
         f"  {cs.who or 'unknown'} at {cs.when or 'unknown'} — {cs.source_url or 'no source'}"
         for cs in bundle.claim_signals
-    ]
+    ) or "  (none)"
 
-    unknown_lines = [f"  - {u}" for u in bundle.unknowns]
+    # Filter bundle unknowns to only decision-relevant ones (at most 3)
+    relevant_unknowns = [u for u in bundle.unknowns if not _is_noise_unknown(u)][:3]
+    unknown_lines = "\n".join(f"  - {u}" for u in relevant_unknowns) or "  (none)"
 
     return f"""Write an InvestigationReport for the issue below.
 
 === DEVELOPER PROFILE ===
-{chr(10).join(profile_lines)}
+{profile_block}
 
 === ISSUE ===
 url: {bundle.issue.url}
@@ -133,33 +157,56 @@ author_language_notes: {bundle.issue.author_language_notes or 'none'}
 already_resolved: {bundle.already_resolved}
 already_resolved_url: {bundle.already_resolved_url or 'n/a'}
 
-=== FINDINGS (these are the only valid sources) ===
-{chr(10).join(finding_lines) or '  (none)'}
+=== FINDINGS (the only valid sources — use these source_urls verbatim) ===
+{finding_lines}
 
 === RELATED PRs ===
-{chr(10).join(pr_lines) or '  (none)'}
+{pr_lines}
 
 === ACTIVITY SIGNALS ===
-{chr(10).join(activity_lines) or '  (none)'}
+{activity_lines}
 
 === CLAIM SIGNALS ===
-{chr(10).join(claim_lines) or '  (none)'}
+{claim_lines}
 
-=== BUNDLE UNKNOWNS (copy all of these into the report unknowns) ===
-{chr(10).join(unknown_lines) or '  (none)'}
+=== RELEVANT UNKNOWNS (include only these, do not add new generic ones) ===
+{unknown_lines}
 
 Return a single JSON object matching the InvestigationReport schema.
 """
 
 
+def _is_noise_unknown(u: str) -> bool:
+    """Return True for unknowns that are too generic to be useful."""
+    noise_phrases = (
+        "timestamp", "no maintainer repl", "no reply", "generic",
+        "unsourced finding", "sources_say item removed",
+    )
+    lower = u.lower()
+    return any(p in lower for p in noise_phrases)
+
+
 # ---------------------------------------------------------------------------
-# Output schema (mirrors InvestigationReport but as a plain dict for the LLM)
+# Output schema
 # ---------------------------------------------------------------------------
 
 _REPORT_SCHEMA = {
     "type": "object",
     "properties": {
         "issue_url": {"type": "string"},
+        "summary": {"type": "string"},
+        "issue_status": {
+            "type": "object",
+            "properties": {
+                "state": {
+                    "type": "string",
+                    "enum": ["open", "closed", "claimed", "has_open_pr", "unknown"],
+                },
+                "note": {"type": "string"},
+                "source_url": {"type": "string", "nullable": True},
+            },
+            "required": ["state", "note"],
+        },
         "fit": {
             "type": "object",
             "properties": {
@@ -185,7 +232,17 @@ _REPORT_SCHEMA = {
         },
         "prerequisites": {
             "type": "array",
-            "items": {"type": "string"},
+            "items": {
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string"},
+                    "status": {
+                        "type": "string",
+                        "enum": ["have", "learn", "unknown"],
+                    },
+                },
+                "required": ["text", "status"],
+            },
         },
         "blockers": {
             "type": "array",
@@ -230,19 +287,19 @@ _REPORT_SCHEMA = {
         },
     },
     "required": [
-        "issue_url", "fit", "sources_say", "interpretation",
-        "prerequisites", "blockers", "activity_signals",
-        "related_prs", "first_steps", "unknowns",
+        "issue_url", "summary", "issue_status", "fit",
+        "sources_say", "interpretation", "prerequisites",
+        "blockers", "activity_signals", "related_prs",
+        "first_steps", "unknowns",
     ],
 }
 
 
 # ---------------------------------------------------------------------------
-# Post-processing: remove hallucinated source URLs
+# Post-processing
 # ---------------------------------------------------------------------------
 
 def _collect_bundle_urls(bundle: EvidenceBundle) -> set[str]:
-    """Collect every URL that appears anywhere in the bundle."""
     urls: set[str] = set()
     if bundle.issue.url:
         urls.add(bundle.issue.url)
@@ -262,69 +319,67 @@ def _collect_bundle_urls(bundle: EvidenceBundle) -> set[str]:
     return urls
 
 
-def _sanitise_report(raw: dict, bundle: EvidenceBundle) -> tuple[dict, list[str]]:
+def _sanitise(raw: dict, bundle: EvidenceBundle) -> list[str]:
     """
     Remove sources_say items whose source_url is not in the bundle.
-    Returns the cleaned dict and a list of removed-item messages.
+    Returns list of removal messages (added to unknowns by caller).
     """
     bundle_urls = _collect_bundle_urls(bundle)
     removed: list[str] = []
     kept: list[dict] = []
-
     for item in raw.get("sources_say", []):
         if item.get("source_url") in bundle_urls:
             kept.append(item)
         else:
             removed.append(
-                f"sources_say item removed (URL not in bundle): \"{item.get('claim', '')}\" "
-                f"(url={item.get('source_url', 'none')})"
+                f"sources_say removed (URL not in bundle): \"{item.get('claim', '')}\" "
+                f"url={item.get('source_url', 'none')}"
             )
             logger.warning("Removed hallucinated sources_say URL: %s", item.get("source_url"))
-
-    raw["sources_say"] = kept
-
-    if removed:
-        raw.setdefault("unknowns", []).extend(removed)
-
-    return raw, removed
+    raw["sources_say"] = kept[:7]  # hard cap at 7
+    return removed
 
 
 # ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
 
-
 async def build_report(
     profile: Profile,
     bundle: EvidenceBundle,
 ) -> InvestigationReport:
-    """
-    Build a personalised InvestigationReport with one LLM call.
-
-    Runs a post-processing pass that removes any sources_say item whose
-    source_url is not present in the bundle, and appends a note to unknowns
-    for each removal.
-    """
     prompt = _build_prompt(profile, bundle)
     raw: dict = await generate_json(prompt, _REPORT_SCHEMA, system=_SYSTEM_PROMPT)
 
-    # Guarantee issue_url matches the bundle
     raw["issue_url"] = bundle.issue.url
 
-    # Remove hallucinated source URLs and note them in unknowns
-    raw, removed = _sanitise_report(raw, bundle)
+    removed = _sanitise(raw, bundle)
     if removed:
-        logger.info("%d sources_say item(s) removed during post-processing", len(removed))
+        logger.info("%d sources_say item(s) removed", len(removed))
+        # Do NOT bloat unknowns with internal housekeeping messages
 
-    # Coerce related_prs state to PRState enum values (LLM may return lowercase strings)
+    # Coerce PR states
     for pr in raw.get("related_prs", []):
         try:
             pr["state"] = PRState(pr["state"]).value
         except (ValueError, KeyError):
             pr["state"] = PRState.open.value
 
+    # Cap unknowns at 3 decision-relevant items
+    raw["unknowns"] = [u for u in raw.get("unknowns", []) if not _is_noise_unknown(u)][:3]
+
+    # Build issue_status
+    raw_status = raw.get("issue_status") or {}
+    issue_status = IssueStatus(
+        state=raw_status.get("state", "unknown"),
+        note=raw_status.get("note", ""),
+        source_url=raw_status.get("source_url"),
+    )
+
     return InvestigationReport(
         issue_url=raw["issue_url"],
+        summary=raw.get("summary", ""),
+        issue_status=issue_status,
         fit=FitAssessment(
             level=FitLevel(raw["fit"]["level"]),
             reasoning=raw["fit"]["reasoning"],
@@ -334,7 +389,10 @@ async def build_report(
             for s in raw.get("sources_say", [])
         ],
         interpretation=raw.get("interpretation", []),
-        prerequisites=raw.get("prerequisites", []),
+        prerequisites=[
+            Prerequisite(text=p["text"], status=p.get("status", "unknown"))
+            for p in raw.get("prerequisites", [])
+        ],
         blockers=[
             Blocker(text=b["text"], source_url=b.get("source_url"))
             for b in raw.get("blockers", [])
@@ -347,6 +405,6 @@ async def build_report(
             RelatedPR(url=p["url"], state=PRState(p["state"]))
             for p in raw.get("related_prs", [])
         ],
-        first_steps=raw.get("first_steps", []),
+        first_steps=raw.get("first_steps", [])[:3],
         unknowns=raw.get("unknowns", []),
     )

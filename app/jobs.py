@@ -1,8 +1,5 @@
 """
 In-memory job store and background task runners.
-
-Store: dict[job_id -> JobStatus]
-emit(job_id, stage, message) appends a staged event.
 """
 from __future__ import annotations
 
@@ -16,18 +13,9 @@ from app.models import JobEvent, JobKind, JobStatus, JobStatusEnum
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Store
-# ---------------------------------------------------------------------------
-
 _store: dict[str, JobStatus] = {}
+JOB_TIMEOUT = 300
 
-JOB_TIMEOUT = 300  # seconds; individual investigate tasks share this budget
-
-
-# ---------------------------------------------------------------------------
-# Low-level helpers
-# ---------------------------------------------------------------------------
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -50,18 +38,13 @@ def get_job(job_id: str) -> JobStatus | None:
 
 
 def emit(job_id: str, stage: str, message: str) -> None:
-    """Append a progress event with an explicit stage label."""
     job = _store.get(job_id)
     if job is None:
         return
-    job.events.append(JobEvent(
-        message=f"[{stage}] {message}",
-        timestamp=_now_iso(),
-    ))
+    job.events.append(JobEvent(message=f"[{stage}] {message}", timestamp=_now_iso()))
 
 
 def add_event(job_id: str, message: str) -> None:
-    """Compat shim — append a plain event."""
     job = _store.get(job_id)
     if job is None:
         return
@@ -81,94 +64,38 @@ def set_done(job_id: str, result: Any) -> None:
         job.result = result
 
 
+def set_done_cached(job_id: str, result: Any, generated_at: str) -> None:
+    job = _store.get(job_id)
+    if job:
+        job.status = JobStatusEnum.done
+        job.result = result
+        job.from_cache = True
+        job.generated_at = generated_at
+
+
+def set_done_mock(job_id: str, result: Any) -> None:
+    job = _store.get(job_id)
+    if job:
+        job.status = JobStatusEnum.done
+        job.result = result
+        job.mock = True
+
+
 def set_failed(job_id: str, error: str) -> None:
     job = _store.get(job_id)
     if job:
         job.status = JobStatusEnum.failed
+        job.error = error
         job.events.append(JobEvent(message=f"ERROR: {error}", timestamp=_now_iso()))
-
-
-# ---------------------------------------------------------------------------
-# Report builder (stub for prompt 7)
-# ---------------------------------------------------------------------------
-
-def _build_report_from_bundle(bundle: Any, issue_url: str, profile: Any) -> dict:
-    """
-    Stub report generator. Wraps the EvidenceBundle in an InvestigationReport
-    shape without an extra LLM call.  Replace with the real prompt-7 call later.
-    """
-    from app.models import (
-        InvestigationReport, FitAssessment, FitLevel,
-        SourceClaim, Blocker, ActivitySignal, RelatedPR, PRState,
-    )
-
-    # Derive fit from already_resolved flag and partial flag
-    if bundle.already_resolved:
-        fit_level = FitLevel.weak
-        fit_reasoning = "This issue appears to be already resolved or closed."
-    elif bundle.partial:
-        fit_level = FitLevel.weak
-        fit_reasoning = "Investigation was incomplete; cannot assess fit reliably."
-    else:
-        fit_level = FitLevel.possible
-        fit_reasoning = "No blockers detected during preliminary investigation."
-
-    sources_say = [
-        SourceClaim(claim=f.claim, source_url=f.source_url or issue_url)
-        for f in bundle.findings
-        if f.source_url
-    ]
-
-    prerequisites = [
-        f.claim for f in bundle.findings if f.kind == "prerequisite"
-    ]
-
-    blockers = [
-        Blocker(text=f.claim, source_url=f.source_url)
-        for f in bundle.findings if f.kind == "blocker"
-    ]
-
-    activity_signals = [
-        ActivitySignal(signal=sig.signal, source_url=sig.source_url or issue_url)
-        for sig in bundle.activity_signals
-    ]
-
-    related_prs = []
-    for pr in bundle.related_prs:
-        try:
-            state = PRState(pr.state)
-        except ValueError:
-            state = PRState.open
-        related_prs.append(RelatedPR(url=pr.url, state=state))
-
-    report = InvestigationReport(
-        issue_url=issue_url,
-        fit=FitAssessment(level=fit_level, reasoning=fit_reasoning),
-        sources_say=sources_say,
-        interpretation=[],
-        prerequisites=prerequisites,
-        blockers=blockers,
-        activity_signals=activity_signals,
-        related_prs=related_prs,
-        first_steps=[],
-        unknowns=bundle.unknowns,
-    )
-    return report.model_dump()
 
 
 # ---------------------------------------------------------------------------
 # Background task: discover
 # ---------------------------------------------------------------------------
 
-async def run_discover_job(
-    job_id: str,
-    profile: Any,
-    query: str | None,
-) -> None:
-    """Run discover_issues -> rank_candidates, store shortlist as job result."""
+async def run_discover_job(job_id: str, profile: Any, query: str | None) -> None:
     from app.discover import discover_issues
     from app.rank import rank_candidates
-    from app.config import get_settings
 
     set_running(job_id)
 
@@ -183,46 +110,74 @@ async def run_discover_job(
             emit(job_id, "rank", f"Ranking {len(candidates)} candidates")
             shortlist = await rank_candidates(profile, candidates)
 
-            set_done(job_id, shortlist)
+            set_done(job_id, [c.model_dump() for c in shortlist])
             emit(job_id, "done", f"Discovery complete — {len(shortlist)} issues ranked")
 
     except asyncio.TimeoutError:
-        set_failed(job_id, f"Job timed out after {JOB_TIMEOUT}s")
+        _fallback_discover(job_id, query, f"Job timed out after {JOB_TIMEOUT}s")
     except Exception as exc:  # noqa: BLE001
         logger.exception("discover job %s failed", job_id)
-        set_failed(job_id, str(exc))
+        _fallback_discover(job_id, query, str(exc))
+
+
+def _fallback_discover(job_id: str, query: str | None, reason: str) -> None:
+    from app.demo_results import load_discover_result
+    saved = load_discover_result(query)
+    if saved is not None:
+        logger.warning("discover job %s using saved result for query %r: %s", job_id, query, reason)
+        add_event(job_id, f"[fallback] Live run failed; serving saved result ({reason})")
+        set_done_cached(job_id, saved["result"], saved["generated_at"])
+    else:
+        logger.warning("discover job %s failed, no saved result: %s", job_id, reason)
+        set_failed(job_id, reason)
 
 
 # ---------------------------------------------------------------------------
-# Background task: investigate (single issue)
+# Background task: investigate
 # ---------------------------------------------------------------------------
 
 async def run_investigate_job(
     job_id: str,
     issue_url: str,
     profile: Any,
+    persona_id: str | None = None,
 ) -> None:
-    """Run investigate_issue -> build report, store as job result."""
     from app.investigate import investigate_issue
+    from app.report import build_report
 
     set_running(job_id)
 
-    def _on_event(msg: str) -> None:
-        emit(job_id, "investigate", msg)
+    def _on_stage(stage_label: str) -> None:
+        """Receive a fixed stage label from investigate_issue and emit it."""
+        add_event(job_id, stage_label)
 
     try:
         async with asyncio.timeout(JOB_TIMEOUT):
-            emit(job_id, "investigate", f"Investigating {issue_url}")
-            bundle = await investigate_issue(issue_url, on_event=_on_event)
+            bundle = await investigate_issue(issue_url, on_event=_on_stage)
 
-            emit(job_id, "report", "Building report")
-            report = _build_report_from_bundle(bundle, issue_url, profile)
+            add_event(job_id, "Writing the report")
+            report = await build_report(profile, bundle)
 
-            set_done(job_id, report)
+            set_done(job_id, report.model_dump())
             emit(job_id, "done", "Investigation complete")
 
     except asyncio.TimeoutError:
-        set_failed(job_id, f"Job timed out after {JOB_TIMEOUT}s")
+        _fallback_investigate(job_id, issue_url, persona_id, f"Job timed out after {JOB_TIMEOUT}s")
     except Exception as exc:  # noqa: BLE001
         logger.exception("investigate job %s failed", job_id)
-        set_failed(job_id, str(exc))
+        _fallback_investigate(job_id, issue_url, persona_id, str(exc))
+
+
+def _fallback_investigate(job_id: str, issue_url: str, persona_id: str | None, reason: str) -> None:
+    from app.demo_results import load_investigate_result
+    saved = load_investigate_result(issue_url, persona_id)
+    if saved is not None:
+        logger.warning(
+            "investigate job %s using saved result for %r / %r: %s",
+            job_id, issue_url, persona_id, reason,
+        )
+        add_event(job_id, f"[fallback] Live run failed; serving saved result ({reason})")
+        set_done_cached(job_id, saved["result"], saved["generated_at"])
+    else:
+        logger.warning("investigate job %s failed, no saved result: %s", job_id, reason)
+        set_failed(job_id, reason)

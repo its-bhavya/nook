@@ -339,6 +339,73 @@ def _validate_and_clean(
 
 
 # ---------------------------------------------------------------------------
+# Progress stage mapper
+# ---------------------------------------------------------------------------
+
+# Five fixed stage labels in emission order.
+_STAGES = [
+    "Reading the issue",
+    "Checking linked PRs and claims",
+    "Checking repo activity",
+    "Matching against your profile",
+    "Writing the report",
+]
+
+# Keyword sets that trigger each stage (lowercase).
+_STAGE_KEYWORDS: list[tuple[str, ...]] = [
+    # Reading the issue
+    ("reading", "issue", "title", "label", "open", "description", "body"),
+    # Checking linked PRs and claims
+    ("pull request", "pr", "claim", "assignee", "linked", "merged", "fix"),
+    # Checking repo activity
+    ("activity", "commit", "maintainer", "repo", "recent", "contributor", "pulse"),
+    # Matching against your profile
+    ("match", "profile", "skill", "prerequisite", "requirement", "scope", "hours"),
+    # Writing the report
+    ("report", "writing", "summary", "structur", "output", "result"),
+]
+
+
+def _map_stage(raw_text: str) -> str | None:
+    """
+    Return the stage label for a raw agent message, or None if it does not
+    advance to a new stage. Each stage is emitted at most once, in order.
+    The caller tracks which stages have been emitted.
+    """
+    # Not used here — the stateful mapper is a closure built in investigate_issue.
+    raise NotImplementedError  # pragma: no cover
+
+
+def _make_stage_emitter(on_event: "Callable[[str], Any] | None"):
+    """
+    Return an async callable that:
+    - Logs raw agent text at DEBUG level.
+    - Maps it to one of the five fixed stage labels.
+    - Calls on_event with the stage label at most once per stage, in order.
+    """
+    import asyncio
+    next_stage_idx = [0]  # mutable via list to allow closure mutation
+
+    async def emit_stage(raw: str) -> None:
+        logger.debug("agent step: %s", raw)
+        if on_event is None or next_stage_idx[0] >= len(_STAGES):
+            return
+        lower = raw.lower()
+        # Scan stages from current position forward
+        for i in range(next_stage_idx[0], len(_STAGES)):
+            keywords = _STAGE_KEYWORDS[i]
+            if any(kw in lower for kw in keywords):
+                stage_label = _STAGES[i]
+                next_stage_idx[0] = i + 1
+                result = on_event(stage_label)
+                if asyncio.iscoroutine(result):
+                    await result
+                break  # emit at most one stage per raw message
+
+    return emit_stage
+
+
+# ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
 
@@ -352,38 +419,33 @@ async def investigate_issue(
     Never raises. On failure or partial result, returns a bundle with
     partial=True and a populated unknowns list.
 
-    Args:
-        issue_url: Full GitHub issue URL.
-        on_event:  Optional callable forwarded to run_tinyfish for live progress.
+    Progress events sent to on_event use the five fixed stage labels.
+    Raw agent step text goes to the server log only.
     """
+    import asyncio
 
     async def _emit(msg: str) -> None:
-        logger.info("investigate_issue: %s", msg)
+        """Emit a fixed stage label to the caller."""
+        logger.info("investigate_issue stage: %s", msg)
         if on_event:
             result = on_event(msg)
-            if hasattr(result, "__await__"):
-                await result  # type: ignore[union-attr]
+            if asyncio.iscoroutine(result):
+                await result
 
-    await _emit(f"Starting investigation: {issue_url}")
-
-    # Wrap on_event to prefix agent messages so callers can distinguish them
-    async def _agent_event(msg: str) -> None:
-        await _emit(f"Agent: {msg}")
+    # Stage emitter: maps raw agent text → fixed labels, logs raw text at DEBUG
+    stage_emit = _make_stage_emitter(on_event)
 
     tf_result = await run_tinyfish(
         goal=_GOAL,
         url=issue_url,
         output_schema=_OUTPUT_SCHEMA,
-        on_event=_agent_event,
+        on_event=stage_emit,
     )
-
-    await _emit("Validating agent output...")
 
     # --- failed or empty run ---
     if not tf_result.ok or tf_result.parsed_result is None:
         error_msg = tf_result.error or "TinyFish returned no result"
         logger.warning("Investigation failed for %s: %s", issue_url, error_msg)
-        await _emit(f"Investigation incomplete: {error_msg}")
         return EvidenceBundle(
             issue=IssueHeader(url=issue_url),
             unknowns=[f"Agent run failed or returned no data: {error_msg}"],
@@ -393,9 +455,7 @@ async def investigate_issue(
 
     raw = tf_result.parsed_result
 
-    # --- raw result is not a dict (unexpected shape) ---
     if not isinstance(raw, dict):
-        await _emit("Unexpected result shape — marking partial")
         return EvidenceBundle(
             issue=IssueHeader(url=issue_url),
             unknowns=[f"Unexpected result type from agent: {type(raw).__name__}"],
@@ -403,12 +463,10 @@ async def investigate_issue(
             elapsed_s=tf_result.elapsed_s,
         )
 
-    # --- validate and clean ---
     try:
         bundle, warnings = _validate_and_clean(raw, issue_url)
     except Exception as exc:  # noqa: BLE001
         logger.exception("Validation error for %s", issue_url)
-        await _emit(f"Validation error — marking partial: {exc}")
         return EvidenceBundle(
             issue=IssueHeader(url=issue_url),
             unknowns=[f"Validation error: {exc}"],
@@ -420,12 +478,5 @@ async def investigate_issue(
 
     if warnings:
         logger.info("%d finding(s) moved to unknowns during validation", len(warnings))
-
-    resolution_note = (
-        f" already_resolved=True supporting_url={bundle.already_resolved_url}"
-        if bundle.already_resolved else ""
-    )
-    await _emit(f"Done. findings={len(bundle.findings)} prs={len(bundle.related_prs)}"
-                f" unknowns={len(bundle.unknowns)}{resolution_note}")
 
     return bundle

@@ -84,6 +84,12 @@ class Profile(BaseModel):
 # Request / response models for POST /profile
 # ---------------------------------------------------------------------------
 
+class EnvironmentOverride(BaseModel):
+    """Subset of Environment that the user can supply explicitly; overrides LLM-guessed values."""
+    has_llm_api_keys: Optional[list[str]] = Field(None, description="LLM providers the developer has API access to, e.g. ['Gemini', 'OpenAI']")
+    os: Optional[str] = Field(None, description="Operating system, if the developer chose to share it")
+
+
 class ProfileRequest(BaseModel):
     resume_text: str = Field(..., description="Raw resume or bio pasted as plain text")
     github_url: Optional[str] = Field(None, description="Developer's GitHub profile URL (optional)")
@@ -91,6 +97,7 @@ class ProfileRequest(BaseModel):
     goals: str = Field("", description="What the developer hopes to get from contributing")
     hours_per_week: int = Field(5, ge=1, description="Approximate weekly hours available")
     spoken_languages: list[str] = Field(default_factory=list, description="Human languages the developer is comfortable with")
+    environment: Optional[EnvironmentOverride] = Field(None, description="Explicit environment values; when provided, they override anything the LLM guessed")
 
 
 # ---------------------------------------------------------------------------
@@ -106,6 +113,9 @@ class CandidateIssue(BaseModel):
     comments: int = Field(0, ge=0, description="Comment count visible on the search page")
     claimant_signal: ClaimantSignal = Field(ClaimantSignal.none, description="Visible claim or linked-PR indicator")
     source: IssueSource = Field(IssueSource.github_search, description="Where this issue was found")
+    theme: Optional[str] = Field(None, description="Search theme that surfaced this issue, e.g. 'FastAPI/backend'")
+    matched_skills: list[str] = Field(default_factory=list, description="Profile skill names that appear in title, labels or repo name")
+    reason: Optional[str] = Field(None, description="One-sentence reason this issue fits the developer, set after ranking")
 
 
 class DiscoverRequest(BaseModel):
@@ -124,6 +134,23 @@ class DiscoverResponse(BaseModel):
 class FitAssessment(BaseModel):
     level: FitLevel = Field(..., description="Overall fit verdict: strong | possible | weak")
     reasoning: str = Field(..., description="Plain-language explanation of the verdict")
+
+
+class IssueStatus(BaseModel):
+    state: str = Field(
+        ...,
+        description="Issue state: open | closed | claimed | has_open_pr | unknown",
+    )
+    note: str = Field(..., description="One-sentence plain-English explanation of the state")
+    source_url: Optional[str] = Field(None, description="Supporting URL, or null if inferred")
+
+
+class Prerequisite(BaseModel):
+    text: str = Field(..., description="Skill, tool, setup step or file to read")
+    status: str = Field(
+        ...,
+        description="have | learn | unknown — whether the developer already has this, needs to learn it, or is unknown",
+    )
 
 
 class SourceClaim(BaseModel):
@@ -148,20 +175,37 @@ class RelatedPR(BaseModel):
 
 class InvestigationReport(BaseModel):
     issue_url: str = Field(..., description="The issue that was investigated")
-    fit: FitAssessment = Field(..., description="Personalized fit verdict")
-    sources_say: list[SourceClaim] = Field(default_factory=list, description="Sourced observations — what the pages actually say")
+    summary: str = Field(
+        ...,
+        description=(
+            "≤30 words. Format: '<Good|Possible|Weak> match: <why>. Main risk: <one risk or none>.'"
+        ),
+    )
+    issue_status: IssueStatus = Field(
+        ...,
+        description="Current availability state of the issue",
+    )
+    fit: FitAssessment = Field(..., description="Personalized fit verdict — skills/interests/hours only, never state or PRs")
+    sources_say: list[SourceClaim] = Field(default_factory=list, description="5–7 decision-relevant sourced facts")
     interpretation: list[str] = Field(default_factory=list, description="Nook's inferences, clearly marked as interpretation")
-    prerequisites: list[str] = Field(default_factory=list, description="Skills, tools or accounts needed before starting")
-    blockers: list[Blocker] = Field(default_factory=list, description="Concrete obstacles, each linked to a source where possible")
+    prerequisites: list[Prerequisite] = Field(default_factory=list, description="3–6 concrete prerequisites, each tagged have | learn | unknown")
+    blockers: list[Blocker] = Field(default_factory=list, description="Only things that would stop or seriously slow THIS person")
     activity_signals: list[ActivitySignal] = Field(default_factory=list, description="Observable repository health signals with sources")
     related_prs: list[RelatedPR] = Field(default_factory=list, description="Pull requests linked to or relevant to this issue")
-    first_steps: list[str] = Field(default_factory=list, description="Suggested concrete next actions for the developer")
-    unknowns: list[str] = Field(default_factory=list, description="Things the agent could not verify")
+    first_steps: list[str] = Field(default_factory=list, description="3 concrete next actions")
+    unknowns: list[str] = Field(default_factory=list, description="At most 3 unverified things that would change the decision")
 
 
 class InvestigateRequest(BaseModel):
     issue_url: str = Field(..., description="Full GitHub issue URL to investigate")
     profile: Profile = Field(..., description="Developer profile used to personalise the report")
+    persona_id: Optional[str] = Field(
+        None,
+        description=(
+            "Demo persona key (e.g. 'persona-a'). "
+            "Used only for demo replay / saved-result lookup — ignored on live runs."
+        ),
+    )
 
 
 class InvestigateResponse(BaseModel):
@@ -183,3 +227,23 @@ class JobStatus(BaseModel):
     status: JobStatusEnum = Field(..., description="Current state: queued | running | done | failed")
     events: list[JobEvent] = Field(default_factory=list, description="Progress events emitted so far")
     result: Optional[Any] = Field(None, description="Final result payload when status is done; null otherwise")
+    error: Optional[str] = Field(None, description="Human-readable error message when status is failed; null otherwise")
+    from_cache: bool = Field(
+        False,
+        description=(
+            "True when the result was served from a saved real-run file in data/demo_results/ "
+            "(either via DEMO_MODE replay or as a live-failure fallback). "
+            "Always false for mock_data.py results."
+        ),
+    )
+    generated_at: Optional[str] = Field(
+        None,
+        description="ISO 8601 timestamp of when the cached result was originally generated; null for live and mock runs",
+    )
+    mock: bool = Field(
+        False,
+        description=(
+            "True when the result came from mock_data.py in-process data "
+            "(not a saved real run). from_cache and mock are mutually exclusive."
+        ),
+    )
