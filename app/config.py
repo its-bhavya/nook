@@ -27,10 +27,32 @@ class Settings(BaseSettings):
     tinyfish_max_concurrent: int = 3  # Max parallel TinyFish runs
     llm_timeout: int = 120  # Total seconds to wait for a Gemini response
 
+    # ---- Neon services (injected by `neon env pull` / `neon deploy`) ----
+    # Postgres (Lakebase Postgres) — pooled URL for app traffic, direct for migrations
+    database_url: str = ""            # pooled (-pooler) connection string
+    database_url_unpooled: str = ""   # direct connection string (migrations, dumps)
+    neon_branch: str = ""             # the Neon branch these vars belong to
+
+    # Neon AI Gateway — OpenAI-compatible chat completions endpoint
+    ai_gateway_model: str = "gpt-5-mini"  # default catalog model; override via env
+    # Injected only when `aiGateway: true` in neon.ts AND the plan can serve it.
+    neon_ai_gateway_token: str = ""
+    neon_ai_gateway_base_url: str = ""   # bare host, no path
+
+    # Neon Object Storage (S3-compatible) — AWS-standard env vars
+    aws_access_key_id: str = ""
+    aws_secret_access_key: str = ""
+    aws_endpoint_url_s3: str = ""
+    aws_region: str = ""
+    storage_bucket_name: str = "assets"  # matches the bucket declared in neon.ts
+
+    # `.env.local` is written by Neon and holds the injected service vars;
+    # `.env` is for your own secrets (TINYFISH_API_KEY, etc.). Load both.
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=(".env", ".env.local"),
         env_file_encoding="utf-8",
         case_sensitive=False,
+        extra="ignore",
     )
 
 

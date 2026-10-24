@@ -20,3 +20,10 @@ typing_extensions==4.16.0
 uvicorn[standard]==0.32.1
 watchfiles==1.3.0
 websockets==17.3
+
+# ---- Neon services ----
+# Postgres (Neon Lakebase Postgres): async driver + connection pool
+psycopg[binary]>=3.2,<4
+psycopg-pool>=3.2,<4
+# Object Storage (Neon S3-compatible storage)
+boto3>=1.35,<2
