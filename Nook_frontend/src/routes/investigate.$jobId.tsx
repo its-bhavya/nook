@@ -1,4 +1,4 @@
-﻿import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import { useState, type ReactNode } from "react";
 import { ChevronDown, ChevronUp, ExternalLink, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -126,13 +126,13 @@ function InvestigatePage() {
 
       {job.phase === "loading-result" && (
         <p className="mt-8 flex items-center gap-2 text-muted-foreground">
-          <Loader2 className="size-4 animate-spin" /> Putting the report together...
+          <Loader2 className="size-4 animate-spin" /> Putting the report together…
         </p>
       )}
 
       {job.phase === "failed" && (
         <div role="alert" className="panel mt-8">
-          <h2 className="text-xl font-semibold text-pink">The investigation did not finish</h2>
+          <h2 className="text-xl font-semibold text-pink">The investigation didn't finish</h2>
           <p className="mt-2 text-sm text-muted-foreground">{job.error}</p>
           <div className="mt-4 flex flex-wrap gap-3">
             <Button onClick={job.retry}>Retry</Button>
@@ -146,6 +146,8 @@ function InvestigatePage() {
 
       {job.phase === "done" && report && (
         <div className="mt-10 space-y-6">
+
+          {/* Verdict card */}
           <section className="panel bg-violet-deep">
             <span className={cn("rounded-md px-4 py-2 text-lg font-bold", FIT[report.fit.level].cls)}>
               {FIT[report.fit.level].label}
@@ -154,20 +156,26 @@ function InvestigatePage() {
             <p className="mt-2 leading-7 text-muted-foreground">{report.fit.reasoning}</p>
           </section>
 
+          {/* Status banner */}
           {report.issue_status && (() => {
             const key = report.issue_status.state as IssueState;
             const st = STATUS_STYLE[key] ?? STATUS_STYLE.unknown;
             return (
               <section className={cn("panel flex flex-wrap items-center gap-3 rounded-xl border px-4 py-3", st.cls)}>
                 <span className="font-semibold">{st.label}</span>
-                {report.issue_status.note && <span className="text-sm">{report.issue_status.note}</span>}
+                {report.issue_status.note && (
+                  <span className="text-sm">{report.issue_status.note}</span>
+                )}
                 {report.issue_status.source_url && (
-                  <span className="ml-auto shrink-0"><SourceLink url={report.issue_status.source_url} /></span>
+                  <span className="ml-auto shrink-0">
+                    <SourceLink url={report.issue_status.source_url} />
+                  </span>
                 )}
               </section>
             );
           })()}
 
+          {/* Prerequisites */}
           <Block title="Prerequisites" sub="Status reflects your profile.">
             {report.prerequisites.length ? (
               <div className="flex flex-wrap gap-2">
@@ -184,6 +192,7 @@ function InvestigatePage() {
             ) : <Empty>No prerequisites listed.</Empty>}
           </Block>
 
+          {/* Blockers */}
           <Block title="Blockers">
             {report.blockers.length ? (
               <ul className="space-y-3 text-sm">
@@ -201,6 +210,7 @@ function InvestigatePage() {
             ) : <Empty>No blockers found.</Empty>}
           </Block>
 
+          {/* First steps */}
           <Block title="First steps">
             {report.first_steps.length ? (
               <ol className="list-decimal space-y-2 pl-5 text-sm">
@@ -209,8 +219,10 @@ function InvestigatePage() {
             ) : <Empty>No suggested steps.</Empty>}
           </Block>
 
+          {/* Sources say */}
           <SourcesSay items={report.sources_say} />
 
+          {/* Unknowns */}
           {report.unknowns.length > 0 ? (
             <Block title="Unknowns" sub="Things Nook could not verify." className="border-pink/50">
               <ul className="list-disc space-y-3 pl-4 text-sm">
@@ -222,7 +234,7 @@ function InvestigatePage() {
           )}
 
           <p className="text-sm text-muted-foreground">
-            Nook cannot guarantee an issue is easy, fits your schedule, or leads to an accepted contribution. The decision is yours.
+            Nook can't guarantee an issue is easy, fits your schedule, or leads to an accepted contribution. The decision is yours.
           </p>
 
           <div className="flex flex-wrap gap-3">
