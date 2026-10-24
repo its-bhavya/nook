@@ -30,6 +30,28 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+export async function parseResume(file: File): Promise<string> {
+  const form = new FormData();
+  form.append("file", file);
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE_URL}/parse-resume`, {
+      method: "POST",
+      mode: "cors",
+      body: form,
+    });
+  } catch {
+    throw new Error(`Couldn't reach the Nook server at ${API_BASE_URL}.`);
+  }
+  if (!res.ok) {
+    let detail = "";
+    try { const b = await res.json(); detail = b.detail ?? ""; } catch { /* ignore */ }
+    throw new Error(`PDF parse failed${detail ? `: ${detail}` : ""}.`);
+  }
+  const { text } = await res.json() as { text: string };
+  return text;
+}
+
 export async function buildProfile(body: ProfileRequest): Promise<Profile> {
   return request<Profile>("/profile", { method: "POST", body: JSON.stringify(body) });
 }

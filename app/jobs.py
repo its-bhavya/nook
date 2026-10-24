@@ -1,5 +1,12 @@
 """
 In-memory job store and background task runners.
+
+Timeout layers (investigation example, INVESTIGATE_TIMEOUT_S=240):
+  1. TinyFish agent hard cap:     120 s  (inside run_tinyfish, investigate.py)
+  2. investigate_issue budget:    240 s  (asyncio.timeout in run_investigate_job)
+  3. job-level safety net:        260 s  (JOB_TIMEOUT = INVESTIGATE_TIMEOUT_S + 20)
+
+Discovery uses DISCOVER_TIMEOUT_S (default 150 s) the same way.
 """
 from __future__ import annotations
 
@@ -14,7 +21,13 @@ from app.models import JobEvent, JobKind, JobStatus, JobStatusEnum
 logger = logging.getLogger(__name__)
 
 _store: dict[str, JobStatus] = {}
+
+# Legacy fallback — actual per-pipeline timeouts come from config
 JOB_TIMEOUT = 300
+
+_EMPTY_BUNDLE_ERROR = (
+    "Investigation took too long or returned nothing. Try again."
+)
 
 
 def _now_iso() -> str:
@@ -94,16 +107,18 @@ def set_failed(job_id: str, error: str) -> None:
 # ---------------------------------------------------------------------------
 
 async def run_discover_job(job_id: str, profile: Any, query: str | None) -> None:
+    from app.config import get_settings
     from app.discover import discover_issues
     from app.rank import rank_candidates
 
     set_running(job_id)
+    timeout = get_settings().discover_timeout_s  # DISCOVER_TIMEOUT_S, default 150s
 
     def _on_event(msg: str) -> None:
         emit(job_id, "discover", msg)
 
     try:
-        async with asyncio.timeout(JOB_TIMEOUT):
+        async with asyncio.timeout(timeout + 20):  # safety net 20s over pipeline budget
             emit(job_id, "discover", "Starting issue discovery")
             candidates = await discover_issues(profile, query, on_event=_on_event)
 
@@ -114,7 +129,7 @@ async def run_discover_job(job_id: str, profile: Any, query: str | None) -> None
             emit(job_id, "done", f"Discovery complete — {len(shortlist)} issues ranked")
 
     except asyncio.TimeoutError:
-        _fallback_discover(job_id, query, f"Job timed out after {JOB_TIMEOUT}s")
+        _fallback_discover(job_id, query, f"Job timed out after {timeout}s")
     except Exception as exc:  # noqa: BLE001
         logger.exception("discover job %s failed", job_id)
         _fallback_discover(job_id, query, str(exc))
@@ -142,27 +157,57 @@ async def run_investigate_job(
     profile: Any,
     persona_id: str | None = None,
 ) -> None:
+    from app.config import get_settings
     from app.investigate import investigate_issue
     from app.report import build_report
 
     set_running(job_id)
+    timeout = get_settings().investigate_timeout_s  # INVESTIGATE_TIMEOUT_S, default 240s
 
     def _on_stage(stage_label: str) -> None:
-        """Receive a fixed stage label from investigate_issue and emit it."""
         add_event(job_id, stage_label)
 
     try:
-        async with asyncio.timeout(JOB_TIMEOUT):
+        async with asyncio.timeout(timeout + 20):  # safety net 20s over pipeline budget
             bundle = await investigate_issue(issue_url, on_event=_on_stage)
+
+            # --- Gate: never build a report from an empty bundle ---
+            if not bundle.findings:
+                reason = (
+                    bundle.unknowns[0]
+                    if bundle.unknowns
+                    else "Agent returned no findings"
+                )
+                logger.warning(
+                    "investigate job %s: empty bundle — failing without report. reason=%s",
+                    job_id, reason,
+                )
+                # Try fallback first; if none, fail with the human message
+                _fallback_investigate(job_id, issue_url, persona_id, _EMPTY_BUNDLE_ERROR)
+                return
 
             add_event(job_id, "Writing the report")
             report = await build_report(profile, bundle)
 
-            set_done(job_id, report.model_dump())
+            # --- Gate: if sources_say is empty the report is unusable ---
+            if not report.sources_say:
+                logger.warning(
+                    "investigate job %s: report has no sources_say — failing",
+                    job_id,
+                )
+                _fallback_investigate(job_id, issue_url, persona_id, _EMPTY_BUNDLE_ERROR)
+                return
+
+            # Attach partial flag from bundle so the frontend can show a notice
+            report_dict = report.model_dump()
+            if bundle.partial:
+                report_dict["partial"] = True
+
+            set_done(job_id, report_dict)
             emit(job_id, "done", "Investigation complete")
 
     except asyncio.TimeoutError:
-        _fallback_investigate(job_id, issue_url, persona_id, f"Job timed out after {JOB_TIMEOUT}s")
+        _fallback_investigate(job_id, issue_url, persona_id, f"Job timed out after {timeout}s")
     except Exception as exc:  # noqa: BLE001
         logger.exception("investigate job %s failed", job_id)
         _fallback_investigate(job_id, issue_url, persona_id, str(exc))
@@ -180,4 +225,5 @@ def _fallback_investigate(job_id: str, issue_url: str, persona_id: str | None, r
         set_done_cached(job_id, saved["result"], saved["generated_at"])
     else:
         logger.warning("investigate job %s failed, no saved result: %s", job_id, reason)
-        set_failed(job_id, reason)
+        # Always show the user-friendly message; log the technical reason
+        set_failed(job_id, _EMPTY_BUNDLE_ERROR)

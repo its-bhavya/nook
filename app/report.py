@@ -10,6 +10,7 @@ is not in the bundle and appends a note to unknowns for each removal.
 from __future__ import annotations
 
 import logging
+import re
 
 from app.investigate import EvidenceBundle
 from app.llm import generate_json
@@ -341,6 +342,92 @@ def _sanitise(raw: dict, bundle: EvidenceBundle) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# Report quality guards
+# ---------------------------------------------------------------------------
+
+# Patterns that signal a generic / unsourced first_step
+_GENERIC_STEP_PATTERNS = re.compile(
+    r"confirm\s+(scope|requirements?|timeline|availability|interest|whether)"
+    r"|review\s+the\s+issue\s*$"
+    r"|read\s+the\s+(contributing|readme|docs?)\s*$"
+    r"|check\s+if\s+this\s+is\s+still\s+open"
+    r"|make\s+sure\s+you\s+understand"
+    r"|familiari[sz]e\s+yourself",
+    re.IGNORECASE,
+)
+
+# A step is specific if it names a file, command, URL, or class/function
+_SPECIFIC_STEP_PATTERNS = re.compile(
+    r"(https?://\S+)"            # URL
+    r"|`[^`]+`"                   # inline code / command
+    r"|[\w/]+\.(py|ts|js|md|yml|yaml|json|toml|cfg|ini|txt|rst)"  # filename
+    r"|class\s+\w+|def\s+\w+|function\s+\w+"  # code symbol
+    r"|\brun\b.{0,40}\b(test|pytest|npm|yarn|cargo|make|python)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_specific_step(step: str) -> bool:
+    if _GENERIC_STEP_PATTERNS.search(step):
+        return False
+    return bool(_SPECIFIC_STEP_PATTERNS.search(step))
+
+
+def _filter_first_steps(steps: list) -> list:
+    """
+    Keep only specific, sourced first_steps.  Generic items are dropped.
+    If fewer than 2 specific steps can be supported, return however many there are
+    (possibly zero) rather than padding with generic noise.
+    """
+    if not isinstance(steps, list):
+        return []
+    kept = [s for s in steps if isinstance(s, str) and _is_specific_step(s)]
+    logger.debug(
+        "first_steps filter: %d in → %d specific kept (dropped %d generic)",
+        len(steps), len(kept), len(steps) - len(kept),
+    )
+    return kept[:3]
+
+
+def _filter_prerequisites(prereqs: list, bundle: "EvidenceBundle") -> list:
+    """
+    Remove prerequisites that are generic skill-match observations
+    (those belong in fit.reasoning) rather than concrete things sourced
+    from the issue body or repo.
+    """
+    if not isinstance(prereqs, list):
+        return []
+
+    # Build a bag of words from the bundle to check sourcing
+    bundle_text = " ".join([
+        bundle.issue.title or "",
+        *[f.claim for f in bundle.findings],
+        *[pr.url for pr in bundle.related_prs],
+    ]).lower()
+
+    _PROFILE_ONLY_PATTERNS = re.compile(
+        r"^(familiarity with|knowledge of|understanding of|experience (with|in))\s+\w"
+        r"|(your|the developer'?s?)\s+(background|experience|skills?)",
+        re.IGNORECASE,
+    )
+
+    kept = []
+    for p in prereqs:
+        if not isinstance(p, dict):
+            continue
+        text = (p.get("text") or "").strip()
+        if not text:
+            continue
+        # Drop purely profile-derived generic statements
+        if _PROFILE_ONLY_PATTERNS.match(text):
+            logger.debug("prerequisites filter: dropped profile-only item: %r", text)
+            continue
+        kept.append(p)
+
+    return kept[:6]
+
+
+# ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
 
@@ -367,6 +454,12 @@ async def build_report(
 
     # Cap unknowns at 3 decision-relevant items
     raw["unknowns"] = [u for u in raw.get("unknowns", []) if not _is_noise_unknown(u)][:3]
+
+    # --- Quality guard: first_steps must be specific ---
+    raw["first_steps"] = _filter_first_steps(raw.get("first_steps", []))
+
+    # --- Quality guard: prerequisites must be sourced from issue/repo, not profile alone ---
+    raw["prerequisites"] = _filter_prerequisites(raw.get("prerequisites", []), bundle)
 
     # Build issue_status
     raw_status = raw.get("issue_status") or {}

@@ -23,8 +23,10 @@ class Settings(BaseSettings):
     discovery_fallback_urls: str = ""
 
     # Timeouts (seconds)
-    tinyfish_timeout: int = 120   # Max wall-clock seconds per TinyFish run
-    tinyfish_max_concurrent: int = 3  # Max parallel TinyFish runs
+    tinyfish_timeout: int = 120       # Max wall-clock seconds per TinyFish run (legacy default)
+    investigate_timeout_s: int = 240  # Max wall-clock seconds for an investigation run (INVESTIGATE_TIMEOUT_S)
+    discover_timeout_s: int = 270     # was 150
+    tinyfish_max_concurrent: int = 4 
     llm_timeout: int = 120  # Total seconds to wait for a Gemini response
 
     model_config = SettingsConfigDict(

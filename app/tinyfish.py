@@ -312,6 +312,89 @@ async def run_tinyfish(
     return result  # type: ignore[return-value]
 
 
+# ---------------------------------------------------------------------------
+# TinyFish Fetch API  (free tier, ~2-8s, no agent steps consumed)
+# ---------------------------------------------------------------------------
+
+_FETCH_ENDPOINT = "https://api.fetch.tinyfish.ai"
+
+@dataclass
+class FetchPageResult:
+    url: str
+    text: str | None      # extracted markdown/text, None on failure
+    error: str | None     # per-URL error code, None on success
+
+
+async def fetch_pages(
+    urls: list[str],
+    *,
+    intent: str | None = None,
+    timeout_s: int = 30,
+) -> list[FetchPageResult]:
+    """
+    Fetch one or more pages using the TinyFish Fetch API (free tier).
+
+    Renders JS-heavy pages and returns clean markdown text.
+    Up to 10 URLs per call; raises nothing — errors come back as FetchPageResult.error.
+
+    Args:
+        urls:      List of page URLs (max 10).
+        intent:    Optional natural-language hint for better extraction quality.
+        timeout_s: HTTP client timeout in seconds.
+
+    Returns:
+        One FetchPageResult per URL, in the same order as input.
+    """
+    if not urls:
+        return []
+
+    key = get_settings().tinyfish_api_key
+    if not key:
+        return [FetchPageResult(url=u, text=None, error="TINYFISH_API_KEY not set") for u in urls]
+
+    body: dict = {"urls": urls, "format": "markdown"}
+    if intent:
+        body["intent"] = intent[:2000]
+
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(timeout_s + 5)) as client:
+            resp = await client.post(
+                _FETCH_ENDPOINT,
+                headers={"X-API-Key": key, "Content-Type": "application/json"},
+                json=body,
+            )
+            if resp.status_code != 200:
+                err = f"HTTP {resp.status_code}: {resp.text[:200]}"
+                logger.error("TinyFish Fetch API error: %s", err)
+                return [FetchPageResult(url=u, text=None, error=err) for u in urls]
+
+            data = resp.json()
+
+    except httpx.TimeoutException:
+        return [FetchPageResult(url=u, text=None, error="fetch_timeout") for u in urls]
+    except Exception as exc:  # noqa: BLE001
+        logger.error("TinyFish Fetch API unexpected error: %s", exc)
+        return [FetchPageResult(url=u, text=None, error=str(exc)) for u in urls]
+
+    # Map results back to input order
+    result_map: dict[str, FetchPageResult] = {}
+    for item in data.get("results") or []:
+        u = item.get("url") or ""
+        result_map[u] = FetchPageResult(
+            url=u,
+            text=item.get("text") or item.get("content") or None,
+            error=None,
+        )
+    for item in data.get("errors") or []:
+        u = item.get("url") or ""
+        result_map[u] = FetchPageResult(url=u, text=None, error=item.get("error") or "unknown")
+
+    out: list[FetchPageResult] = []
+    for u in urls:
+        out.append(result_map.get(u) or FetchPageResult(url=u, text=None, error="missing_from_response"))
+    return out
+
+
 def _should_retry_result(result: TinyFishResult) -> bool:
     """
     Return True only for errors that are worth retrying.

@@ -45,13 +45,16 @@ _ISSUE_URL_RE = re.compile(
 _MAX_PER_SEARCH = 8
 _MAX_CANDIDATES = 24
 
-# Global time budget for the whole discover phase. Keep this below the job
-# limit (300s) by however long ranking and other post-processing need.
-_DISCOVER_BUDGET_S = 210
+# Global time budget for the whole discover phase — derived from config at runtime.
+# Keep this below DISCOVER_TIMEOUT_S by ~20s to leave room for ranking.
+# See _get_discover_budget() below.
+_DISCOVER_BUDGET_MARGIN_S = 20   # seconds reserved for ranking after searches finish
+
 # Don't start a fallback run unless at least this much budget is left.
-_MIN_FALLBACK_S = 60
+_MIN_FALLBACK_S = 45
 # Don't start any run with less than this left; it can't finish.
 _MIN_RUN_S = 15
+_DISCOVER_BUDGET_MARGIN_S = 40   # reserved for ranking (LLM call) after searches finish
 
 # ---------------------------------------------------------------------------
 # TinyFish output schema — GitHub search
@@ -89,14 +92,15 @@ _SEARCH_OUTPUT_SCHEMA: dict = {
 }
 
 # No step cap is available on our tier, so the goal text is the only lever on
-# agent behaviour. Keep it explicit about not exploring.
+# agent behaviour. Keep it explicit about not exploring and returning fast.
 _SEARCH_GOAL = (
     "Extract the first 10 open GitHub issues listed on this search results page. "
     "For each issue return: url, title, repo (owner/repo), labels, opened date, "
     "comment count, claimant_signal (none/claimed/linked_pr), primary_language, "
     "stars (if visible), and a one-line summary of what the issue asks for. "
-    "Do not scroll, paginate, click, or follow any links. "
-    "Read only what is visible on initial page load, then return immediately."
+    "Do NOT scroll, paginate, click, or follow any links. "
+    "Read ONLY what is visible on the initial page load, then return immediately. "
+    "Do not wait for dynamic content — return as soon as the issue list is visible."
 )
 
 # ---------------------------------------------------------------------------
@@ -136,8 +140,9 @@ _AGG_GOAL = (
     "For each issue return: url, title, repo, primary_language, stars, "
     "difficulty, domain, tech_stack (list of strings), claimed (bool), "
     "comments, opened date, and a one-line summary. "
-    "Do not scroll, paginate, click, or follow links. "
-    "Read only what is visible on initial page load, then return immediately."
+    "Do NOT scroll, paginate, click, or follow links. "
+    "Read ONLY what is visible on the initial page load, then return immediately. "
+    "Do not wait for dynamic content — return as soon as the issue list is visible."
 )
 
 # ---------------------------------------------------------------------------
@@ -547,17 +552,22 @@ def validate_reason(reason: str, c: CandidateIssue) -> bool:
 # Deadline helpers
 # ---------------------------------------------------------------------------
 
+def _get_discover_budget() -> int:
+    """
+    Return the wall-clock budget (seconds) for all searches combined.
+    Reads DISCOVER_TIMEOUT_S from config and subtracts the ranking margin.
+    """
+    return max(60, get_settings().discover_timeout_s - _DISCOVER_BUDGET_MARGIN_S)
+
+
 def _remaining(deadline: float) -> int:
     """Whole seconds left in the shared discover budget (never negative)."""
     return max(0, int(deadline - time.monotonic()))
 
 
 def _call_timeout(deadline: float) -> int:
-    """
-    Timeout for a single TinyFish call: the configured per-run timeout,
-    capped by whatever is left in the shared budget.
-    """
-    return min(get_settings().tinyfish_timeout, _remaining(deadline))
+    """Each call may use whatever is left of the shared budget. No fixed cap."""
+    return _remaining(deadline)
 
 
 # ---------------------------------------------------------------------------
@@ -720,7 +730,8 @@ async def discover_issues(
     Returns up to _MAX_CANDIDATES validated CandidateIssue items.
     """
     t_start = time.monotonic()
-    deadline = t_start + _DISCOVER_BUDGET_S
+    budget = _get_discover_budget()
+    deadline = t_start + budget
     await _safe_emit(on_event, "Building searches")
 
     language = _detect_language(profile)
@@ -728,7 +739,7 @@ async def discover_issues(
 
     logger.info(
         "discover_issues: language=%s themes=%s budget=%ds",
-        language, themes, _DISCOVER_BUDGET_S,
+        language, themes, budget,
     )
 
     # Shared state: tasks append results here as soon as each TinyFish call returns
@@ -754,7 +765,7 @@ async def discover_issues(
     # Pending tasks are cancelled; anything already in `sink` is kept.
     # -----------------------------------------------------------------------
     if tasks:
-        done, pending = await asyncio.wait(tasks, timeout=_remaining(deadline) + 10)
+        done, pending = await asyncio.wait(tasks, timeout=_remaining(deadline) + 5)
 
         if pending:
             for t in pending:

@@ -5,7 +5,7 @@ import asyncio
 import json
 from datetime import datetime, timezone
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -61,6 +61,32 @@ app.add_middleware(
 @app.get("/health", tags=["meta"], summary="Health check")
 def health():
     return {"status": "ok"}
+
+
+# ---------------------------------------------------------------------------
+# POST /parse-resume
+# ---------------------------------------------------------------------------
+
+@app.post(
+    "/parse-resume",
+    tags=["profile"],
+    summary="Extract plain text from an uploaded PDF resume",
+)
+async def parse_resume(file: UploadFile = File(...)) -> dict:
+    if not file.filename or not file.filename.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Only PDF files are supported.")
+    try:
+        from pypdf import PdfReader
+        import io
+        data = await file.read()
+        reader = PdfReader(io.BytesIO(data))
+        pages = [page.extract_text() or "" for page in reader.pages]
+        text = "\n".join(pages).strip()
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"Could not parse PDF: {e}")
+    if not text:
+        raise HTTPException(status_code=422, detail="No text could be extracted from the PDF.")
+    return {"text": text}
 
 
 # ---------------------------------------------------------------------------

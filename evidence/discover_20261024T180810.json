@@ -1,0 +1,770 @@
+{
+  "timestamp": "2026-10-24T18:08:10.119431+00:00",
+  "query": null,
+  "themes": [
+    {
+      "label": "backend/API",
+      "keywords": "FastAPI"
+    },
+    {
+      "label": "retrieval/vector-DB",
+      "keywords": "RAG"
+    },
+    {
+      "label": "LLM-agents",
+      "keywords": "LLM"
+    }
+  ],
+  "search_log": [
+    {
+      "theme": "retrieval/vector-DB",
+      "count": "8"
+    },
+    {
+      "theme": "LLM-agents",
+      "count": "8"
+    },
+    {
+      "theme": "backend/API (aggregator)",
+      "count": "0"
+    },
+    {
+      "theme": "backend/API",
+      "count": "8"
+    }
+  ],
+  "discover_elapsed_s": 281.36,
+  "rank_elapsed_s": 9.45,
+  "total_elapsed_s": 290.81,
+  "candidates_before_ranking": 24,
+  "candidates": [
+    {
+      "url": "https://github.com/PicadoLabs/ai-model-router/issues/60",
+      "repo": "PicadoLabs/ai-model-router",
+      "title": "\u3010SDK\u3011Align Python SDK Target Endpoints with FastAPI Backend",
+      "labels": [
+        "backend",
+        "bug",
+        "good first issue",
+        "sdk"
+      ],
+      "opened": "2026-10-24",
+      "comments": 1,
+      "claimant_signal": "none",
+      "source": "github_search",
+      "theme": "backend/API",
+      "matched_skills": [
+        "Python",
+        "FastAPI"
+      ],
+      "reason": "This Python and FastAPI task has 1 comment and matches backend interests.",
+      "score": 8.0,
+      "primary_language": "Python",
+      "stars": null,
+      "difficulty": null,
+      "domain": null,
+      "tech_stack": [],
+      "summary": "Align Python SDK target endpoints with the FastAPI backend"
+    },
+    {
+      "url": "https://github.com/PicadoLabs/ai-model-router/issues/57",
+      "repo": "PicadoLabs/ai-model-router",
+      "title": "\u3010Security\u3011Prevent Remote Code Execution in Benchmark Evaluation Suite",
+      "labels": [
+        "backend",
+        "good first issue",
+        "security"
+      ],
+      "opened": "2026-10-24",
+      "comments": 0,
+      "claimant_signal": "none",
+      "source": "github_search",
+      "theme": "backend/API",
+      "matched_skills": [
+        "FastAPI"
+      ],
+      "reason": null,
+      "score": null,
+      "primary_language": "Python",
+      "stars": null,
+      "difficulty": null,
+      "domain": null,
+      "tech_stack": [],
+      "summary": "Decouple code execution from the main FastAPI server and restrict environment variable inheritance"
+    },
+    {
+      "url": "https://github.com/fossasia/voxbento/issues/906",
+      "repo": "fossasia/voxbento",
+      "title": "ui(developer): Extract dashboard copy-to-clipboard and modal logic to developer.js",
+      "labels": [
+        "frontend",
+        "good first issue",
+        "ui"
+      ],
+      "opened": "2026-10-20",
+      "comments": 4,
+      "claimant_signal": "none",
+      "source": "github_search",
+      "theme": "backend/API",
+      "matched_skills": [],
+      "reason": null,
+      "score": null,
+      "primary_language": "Python",
+      "stars": null,
+      "difficulty": null,
+      "domain": null,
+      "tech_stack": [],
+      "summary": "Refactor dashboard UI logic into a separate developer.js module"
+    },
+    {
+      "url": "https://github.com/fossasia/voxbento/issues/900",
+      "repo": "fossasia/voxbento",
+      "title": "ui: Extract inline styles and script from magic_success.html into CSS and JS modules",
+      "labels": [
+        "frontend",
+        "good first issue",
+        "ui"
+      ],
+      "opened": "2026-10-20",
+      "comments": 2,
+      "claimant_signal": "none",
+      "source": "github_search",
+      "theme": "backend/API",
+      "matched_skills": [],
+      "reason": null,
+      "score": null,
+      "primary_language": "Python",
+      "stars": null,
+      "difficulty": null,
+      "domain": null,
+      "tech_stack": [],
+      "summary": "Move inline styles and scripts from magic_success.html to external modules"
+    },
+    {
+      "url": "https://github.com/bundlab/taskflow-pro/issues/2",
+      "repo": "bundlab/taskflow-pro",
+      "title": "\ud83d\ude80 Feature: Implement User Authentication (JWT + Login/Register)",
+      "labels": [
+        "enhancement",
+        "good first issue",
+        "help wanted"
+      ],
+      "opened": "2026-07-04",
+      "comments": 0,
+      "claimant_signal": "none",
+      "source": "github_search",
+      "theme": "backend/API",
+      "matched_skills": [],
+      "reason": null,
+      "score": null,
+      "primary_language": "Python",
+      "stars": null,
+      "difficulty": null,
+      "domain": null,
+      "tech_stack": [],
+      "summary": "Implement user authentication using JWT for login and registration"
+    },
+    {
+      "url": "https://github.com/bundlab/ai-prompt-studio/issues/1",
+      "repo": "bundlab/ai-prompt-studio",
+      "title": "docs: Add API endpoint documentation for Prompt Execution routes",
+      "labels": [
+        "good first issue"
+      ],
+      "opened": "2026-10-23",
+      "comments": 0,
+      "claimant_signal": "none",
+      "source": "github_search",
+      "theme": "backend/API",
+      "matched_skills": [],
+      "reason": null,
+      "score": null,
+      "primary_language": "Python",
+      "stars": null,
+      "difficulty": null,
+      "domain": null,
+      "tech_stack": [],
+      "summary": "Create documentation for prompt execution API endpoints"
+    },
+    {
+      "url": "https://github.com/eclipse-tractusx/tractusx-sdk/issues/253",
+      "repo": "eclipse-tractusx/tractusx-sdk",
+      "title": "LocalCache.delete() fails with AttributeError",
+      "labels": [
+        "bug",
+        "good first issue",
+        "refine-me!"
+      ],
+      "opened": "2026-10-19",
+      "comments": 1,
+      "claimant_signal": "none",
+      "source": "github_search",
+      "theme": "backend/API",
+      "matched_skills": [],
+      "reason": null,
+      "score": null,
+      "primary_language": "Python",
+      "stars": null,
+      "difficulty": null,
+      "domain": null,
+      "tech_stack": [],
+      "summary": "Fix AttributeError in LocalCache.delete() caused by missing delete method in InMemoryBackend"
+    },
+    {
+      "url": "https://github.com/rio-labs/rio/issues/202",
+      "repo": "rio-labs/rio",
+      "title": "Add Instructions for Bundling (pyinstaller, py2exe or similar)",
+      "labels": [
+        "documentation",
+        "good first issue"
+      ],
+      "opened": "2024-12-27",
+      "comments": 18,
+      "claimant_signal": "none",
+      "source": "github_search",
+      "theme": "backend/API",
+      "matched_skills": [],
+      "reason": null,
+      "score": null,
+      "primary_language": "Python",
+      "stars": null,
+      "difficulty": null,
+      "domain": null,
+      "tech_stack": [],
+      "summary": "Provide instructions for bundling applications using tools like PyInstaller or py2exe"
+    },
+    {
+      "url": "https://github.com/codepath/pathreview-ai301-fa26-howard/issues/68",
+      "repo": "codepath/pathreview-ai301-fa26-howard",
+      "title": "Keyword search raises `ZeroDivisionError` when the index is empty",
+      "labels": [
+        "bug",
+        "good first issue",
+        "rag",
+        "tier-1"
+      ],
+      "opened": "2026-09-14",
+      "comments": 3,
+      "claimant_signal": "none",
+      "source": "github_search",
+      "theme": "retrieval/vector-DB",
+      "matched_skills": [
+        "Python",
+        "RAG"
+      ],
+      "reason": "This RAG and Python bug has 3 comments and matches retrieval interests.",
+      "score": 9.0,
+      "primary_language": "Python",
+      "stars": null,
+      "difficulty": null,
+      "domain": null,
+      "tech_stack": [],
+      "summary": "Fix a ZeroDivisionError occurring during keyword search when the index is empty."
+    },
+    {
+      "url": "https://github.com/agno-agi/agno/issues/7293",
+      "repo": "agno-agi/agno",
+      "title": "Add OSOP workflow example for Agno agent patterns",
+      "labels": [
+        "enhancement",
+        "good first issue",
+        "priority: low"
+      ],
+      "opened": "2026-04-02",
+      "comments": 6,
+      "claimant_signal": "none",
+      "source": "github_search",
+      "theme": "retrieval/vector-DB",
+      "matched_skills": [],
+      "reason": null,
+      "score": null,
+      "primary_language": "Python",
+      "stars": null,
+      "difficulty": null,
+      "domain": null,
+      "tech_stack": [],
+      "summary": "Create an OSOP workflow example demonstrating Agno agent patterns."
+    },
+    {
+      "url": "https://github.com/Srivatsa03/rag-redteam/issues/5",
+      "repo": "Srivatsa03/rag-redteam",
+      "title": "Add a CircleCI config example",
+      "labels": [
+        "enhancement",
+        "good first issue"
+      ],
+      "opened": "2026-09-29",
+      "comments": 1,
+      "claimant_signal": "none",
+      "source": "github_search",
+      "theme": "retrieval/vector-DB",
+      "matched_skills": [
+        "RAG"
+      ],
+      "reason": null,
+      "score": null,
+      "primary_language": "Python",
+      "stars": null,
+      "difficulty": null,
+      "domain": null,
+      "tech_stack": [],
+      "summary": "Add a CircleCI configuration example to the repository."
+    },
+    {
+      "url": "https://github.com/vasikmansuri/universal-calling-agent-toolkit/issues/5",
+      "repo": "vasikmansuri/universal-calling-agent-toolkit",
+      "title": "Add a stop-word list to InMemoryRetriever",
+      "labels": [
+        "good first issue"
+      ],
+      "opened": "2026-10-23",
+      "comments": 0,
+      "claimant_signal": "none",
+      "source": "github_search",
+      "theme": "retrieval/vector-DB",
+      "matched_skills": [],
+      "reason": null,
+      "score": null,
+      "primary_language": "Python",
+      "stars": null,
+      "difficulty": null,
+      "domain": null,
+      "tech_stack": [],
+      "summary": "Implement a stop-word list feature for the InMemoryRetriever component."
+    },
+    {
+      "url": "https://github.com/Horus-EIP/horus/issues/5",
+      "repo": "Horus-EIP/horus",
+      "title": "An \"ok\" agent answer that cites no source is accepted",
+      "labels": [
+        "area: agent",
+        "bug",
+        "good first issue",
+        "priority: should",
+        "sprint-2"
+      ],
+      "opened": "2026-10-13",
+      "comments": 0,
+      "claimant_signal": "none",
+      "source": "github_search",
+      "theme": "retrieval/vector-DB",
+      "matched_skills": [],
+      "reason": null,
+      "score": null,
+      "primary_language": "Python",
+      "stars": null,
+      "difficulty": null,
+      "domain": null,
+      "tech_stack": [],
+      "summary": "Address an issue where agents accept answers without citations."
+    },
+    {
+      "url": "https://github.com/Vedantgitbot/booth/issues/2",
+      "repo": "Vedantgitbot/booth",
+      "title": "Add an LLM Provider Integration Example & Benchmark",
+      "labels": [
+        "good first issue",
+        "hacktoberfest",
+        "help wanted"
+      ],
+      "opened": "2026-09-19",
+      "comments": 21,
+      "claimant_signal": "none",
+      "source": "github_search",
+      "theme": "retrieval/vector-DB",
+      "matched_skills": [],
+      "reason": null,
+      "score": null,
+      "primary_language": "Python",
+      "stars": null,
+      "difficulty": null,
+      "domain": null,
+      "tech_stack": [],
+      "summary": "Add an integration example and benchmark for LLM providers."
+    },
+    {
+      "url": "https://github.com/agno-agi/agno/issues/7240",
+      "repo": "agno-agi/agno",
+      "title": "cookbook: add compliance agent example with Strale",
+      "labels": [
+        "enhancement",
+        "good first issue",
+        "priority: low"
+      ],
+      "opened": "2026-03-31",
+      "comments": 5,
+      "claimant_signal": "none",
+      "source": "github_search",
+      "theme": "retrieval/vector-DB",
+      "matched_skills": [],
+      "reason": null,
+      "score": null,
+      "primary_language": "Python",
+      "stars": null,
+      "difficulty": null,
+      "domain": null,
+      "tech_stack": [],
+      "summary": "Add a compliance agent example using Strale to the cookbook."
+    },
+    {
+      "url": "https://github.com/codepath/pathreview-ai301-fa26-s3/issues/11",
+      "repo": "codepath/pathreview-ai301-fa26-s3",
+      "title": "Architecture doc doesn't explain the hybrid retrieval scoring formula",
+      "labels": [
+        "docs",
+        "good first issue",
+        "rag",
+        "tier-1"
+      ],
+      "opened": "2026-09-10",
+      "comments": 5,
+      "claimant_signal": "none",
+      "source": "github_search",
+      "theme": "retrieval/vector-DB",
+      "matched_skills": [
+        "RAG",
+        "Python"
+      ],
+      "reason": "This RAG documentation issue has 5 comments and explains hybrid retrieval scoring.",
+      "score": 9.0,
+      "primary_language": "Python",
+      "stars": null,
+      "difficulty": null,
+      "domain": null,
+      "tech_stack": [],
+      "summary": "Update architecture documentation to explain the hybrid retrieval scoring formula."
+    },
+    {
+      "url": "https://github.com/Genrius-AI/pingala8-llm/issues/4",
+      "repo": "Genrius-AI/pingala8-llm",
+      "title": "Benchmark Pingala-8 on your NVIDIA GPU (RTX 30/40/50, T4 and others)",
+      "labels": [
+        "benchmark",
+        "good first issue",
+        "help wanted"
+      ],
+      "opened": "2026-10-24",
+      "comments": 0,
+      "claimant_signal": "none",
+      "source": "github_search",
+      "theme": "LLM-agents",
+      "matched_skills": [],
+      "reason": null,
+      "score": null,
+      "primary_language": null,
+      "stars": 0,
+      "difficulty": null,
+      "domain": null,
+      "tech_stack": [],
+      "summary": "Benchmark the Pingala-8 LLM on various NVIDIA GPUs including RTX 30/40/50 series and T4."
+    },
+    {
+      "url": "https://github.com/tonydzi/verdict-contract/issues/1",
+      "repo": "tonydzi/verdict-contract",
+      "title": "Ship a GitHub Action that fails the job unless a reviewer report ends in an explicit APPROVE",
+      "labels": [
+        "accepted",
+        "good first issue",
+        "help wanted"
+      ],
+      "opened": "2026-09-22",
+      "comments": 5,
+      "claimant_signal": "none",
+      "source": "github_search",
+      "theme": "LLM-agents",
+      "matched_skills": [],
+      "reason": null,
+      "score": null,
+      "primary_language": null,
+      "stars": 0,
+      "difficulty": null,
+      "domain": null,
+      "tech_stack": [],
+      "summary": "Create a GitHub Action to enforce explicit reviewer approval before passing a job."
+    },
+    {
+      "url": "https://github.com/Pratik653/SQLGuard_Ninjapy/issues/7",
+      "repo": "Pratik653/SQLGuard_Ninjapy",
+      "title": "Benchmark: diversify corpus input distribution (bias review B3/B4)",
+      "labels": [
+        "benchmark",
+        "good first issue"
+      ],
+      "opened": "2026-10-24",
+      "comments": 0,
+      "claimant_signal": "none",
+      "source": "github_search",
+      "theme": "LLM-agents",
+      "matched_skills": [],
+      "reason": null,
+      "score": null,
+      "primary_language": null,
+      "stars": 0,
+      "difficulty": null,
+      "domain": null,
+      "tech_stack": [],
+      "summary": "Benchmark and diversify corpus input distribution for bias review B3/B4."
+    },
+    {
+      "url": "https://github.com/cubrid-lab/sqlalchemy-cubrid/issues/1033",
+      "repo": "cubrid-lab/sqlalchemy-cubrid",
+      "title": "docs(development): fix the stale single-test pytest node in the development guides",
+      "labels": [
+        "documentation",
+        "good first issue",
+        "priority: low",
+        "size: XS"
+      ],
+      "opened": "2026-10-24",
+      "comments": 1,
+      "claimant_signal": "none",
+      "source": "github_search",
+      "theme": "LLM-agents",
+      "matched_skills": [],
+      "reason": null,
+      "score": null,
+      "primary_language": null,
+      "stars": 0,
+      "difficulty": null,
+      "domain": null,
+      "tech_stack": [],
+      "summary": "Fix stale pytest node in development documentation guides."
+    },
+    {
+      "url": "https://github.com/holoviz/lumen/issues/908",
+      "repo": "holoviz/lumen",
+      "title": "Mention estimate of tokens used in docs",
+      "labels": [
+        "documentation",
+        "good first issue",
+        "help wanted",
+        "llm",
+        "lumen-ai"
+      ],
+      "opened": "2024-12-27",
+      "comments": 3,
+      "claimant_signal": "none",
+      "source": "github_search",
+      "theme": "LLM-agents",
+      "matched_skills": [],
+      "reason": null,
+      "score": null,
+      "primary_language": null,
+      "stars": 0,
+      "difficulty": null,
+      "domain": null,
+      "tech_stack": [],
+      "summary": "Add token usage estimates to the Lumen documentation."
+    },
+    {
+      "url": "https://github.com/fireform-core/FireForm/issues/442",
+      "repo": "fireform-core/FireForm",
+      "title": "\\[SECURITY\\] No rate limiting on API endpoints",
+      "labels": [
+        "good first issue"
+      ],
+      "opened": "2026-04-15",
+      "comments": 0,
+      "claimant_signal": "none",
+      "source": "github_search",
+      "theme": "LLM-agents",
+      "matched_skills": [],
+      "reason": null,
+      "score": null,
+      "primary_language": null,
+      "stars": 0,
+      "difficulty": null,
+      "domain": null,
+      "tech_stack": [],
+      "summary": "Implement rate limiting on FireForm API endpoints to address a security concern."
+    },
+    {
+      "url": "https://github.com/yikoko01/mem-patrol/issues/3",
+      "repo": "yikoko01/mem-patrol",
+      "title": "Add a no-LLM regression test for decide(ctx) without a judge",
+      "labels": [
+        "good first issue"
+      ],
+      "opened": "2026-10-24",
+      "comments": 0,
+      "claimant_signal": "none",
+      "source": "github_search",
+      "theme": "LLM-agents",
+      "matched_skills": [
+        "LLM agents"
+      ],
+      "reason": "Matches your LLM agents experience, opened 2026-10-24, no comments yet.",
+      "score": 8.0,
+      "primary_language": null,
+      "stars": 0,
+      "difficulty": null,
+      "domain": null,
+      "tech_stack": [],
+      "summary": "Add a regression test for decide(ctx) without a judge that doesn't depend on an LLM."
+    },
+    {
+      "url": "https://github.com/algorithmicsuperintelligence/openevolve/issues/468",
+      "repo": "algorithmicsuperintelligence/openevolve",
+      "title": "Bidirectional interop with Google Cloud AlphaEvolve (run AE examples on OE, and export OE programs to the AE service)",
+      "labels": [
+        "enhancement",
+        "good first issue",
+        "help wanted"
+      ],
+      "opened": "2026-07-10",
+      "comments": 3,
+      "claimant_signal": "none",
+      "source": "github_search",
+      "theme": "LLM-agents",
+      "matched_skills": [
+        "LLM agents",
+        "open-source tooling"
+      ],
+      "reason": "Matches your LLM agents and open-source tooling experience, opened 2026-07-10, 3 comments.",
+      "score": 8.0,
+      "primary_language": null,
+      "stars": 0,
+      "difficulty": null,
+      "domain": null,
+      "tech_stack": [],
+      "summary": "Enable bidirectional interoperability between OpenEvolve and Google Cloud AlphaEvolve."
+    }
+  ],
+  "shortlist": [
+    {
+      "url": "https://github.com/codepath/pathreview-ai301-fa26-howard/issues/68",
+      "repo": "codepath/pathreview-ai301-fa26-howard",
+      "title": "Keyword search raises `ZeroDivisionError` when the index is empty",
+      "labels": [
+        "bug",
+        "good first issue",
+        "rag",
+        "tier-1"
+      ],
+      "opened": "2026-09-14",
+      "comments": 3,
+      "claimant_signal": "none",
+      "source": "github_search",
+      "theme": "retrieval/vector-DB",
+      "matched_skills": [
+        "Python",
+        "RAG"
+      ],
+      "reason": "This RAG and Python bug has 3 comments and matches retrieval interests.",
+      "score": 9.0,
+      "primary_language": "Python",
+      "stars": null,
+      "difficulty": null,
+      "domain": null,
+      "tech_stack": [],
+      "summary": "Fix a ZeroDivisionError occurring during keyword search when the index is empty."
+    },
+    {
+      "url": "https://github.com/codepath/pathreview-ai301-fa26-s3/issues/11",
+      "repo": "codepath/pathreview-ai301-fa26-s3",
+      "title": "Architecture doc doesn't explain the hybrid retrieval scoring formula",
+      "labels": [
+        "docs",
+        "good first issue",
+        "rag",
+        "tier-1"
+      ],
+      "opened": "2026-09-10",
+      "comments": 5,
+      "claimant_signal": "none",
+      "source": "github_search",
+      "theme": "retrieval/vector-DB",
+      "matched_skills": [
+        "RAG",
+        "Python"
+      ],
+      "reason": "This RAG documentation issue has 5 comments and explains hybrid retrieval scoring.",
+      "score": 9.0,
+      "primary_language": "Python",
+      "stars": null,
+      "difficulty": null,
+      "domain": null,
+      "tech_stack": [],
+      "summary": "Update architecture documentation to explain the hybrid retrieval scoring formula."
+    },
+    {
+      "url": "https://github.com/PicadoLabs/ai-model-router/issues/60",
+      "repo": "PicadoLabs/ai-model-router",
+      "title": "\u3010SDK\u3011Align Python SDK Target Endpoints with FastAPI Backend",
+      "labels": [
+        "backend",
+        "bug",
+        "good first issue",
+        "sdk"
+      ],
+      "opened": "2026-10-24",
+      "comments": 1,
+      "claimant_signal": "none",
+      "source": "github_search",
+      "theme": "backend/API",
+      "matched_skills": [
+        "Python",
+        "FastAPI"
+      ],
+      "reason": "This Python and FastAPI task has 1 comment and matches backend interests.",
+      "score": 8.0,
+      "primary_language": "Python",
+      "stars": null,
+      "difficulty": null,
+      "domain": null,
+      "tech_stack": [],
+      "summary": "Align Python SDK target endpoints with the FastAPI backend"
+    },
+    {
+      "url": "https://github.com/yikoko01/mem-patrol/issues/3",
+      "repo": "yikoko01/mem-patrol",
+      "title": "Add a no-LLM regression test for decide(ctx) without a judge",
+      "labels": [
+        "good first issue"
+      ],
+      "opened": "2026-10-24",
+      "comments": 0,
+      "claimant_signal": "none",
+      "source": "github_search",
+      "theme": "LLM-agents",
+      "matched_skills": [
+        "LLM agents"
+      ],
+      "reason": "Matches your LLM agents experience, opened 2026-10-24, no comments yet.",
+      "score": 8.0,
+      "primary_language": null,
+      "stars": 0,
+      "difficulty": null,
+      "domain": null,
+      "tech_stack": [],
+      "summary": "Add a regression test for decide(ctx) without a judge that doesn't depend on an LLM."
+    },
+    {
+      "url": "https://github.com/algorithmicsuperintelligence/openevolve/issues/468",
+      "repo": "algorithmicsuperintelligence/openevolve",
+      "title": "Bidirectional interop with Google Cloud AlphaEvolve (run AE examples on OE, and export OE programs to the AE service)",
+      "labels": [
+        "enhancement",
+        "good first issue",
+        "help wanted"
+      ],
+      "opened": "2026-07-10",
+      "comments": 3,
+      "claimant_signal": "none",
+      "source": "github_search",
+      "theme": "LLM-agents",
+      "matched_skills": [
+        "LLM agents",
+        "open-source tooling"
+      ],
+      "reason": "Matches your LLM agents and open-source tooling experience, opened 2026-07-10, 3 comments.",
+      "score": 8.0,
+      "primary_language": null,
+      "stars": 0,
+      "difficulty": null,
+      "domain": null,
+      "tech_stack": [],
+      "summary": "Enable bidirectional interoperability between OpenEvolve and Google Cloud AlphaEvolve."
+    }
+  ]
+}
