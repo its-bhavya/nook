@@ -12,7 +12,7 @@ import asyncio
 import json
 import logging
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Callable, Coroutine
 
 import httpx
@@ -98,15 +98,6 @@ def _build_body(
     return body
 
 
-def _is_retryable(category: str | None, http_status: int | None) -> bool:
-    """Return True only for transient errors we should retry."""
-    if http_status and http_status >= 500:
-        return True
-    if category in ("SYSTEM_FAILURE", "UNKNOWN"):
-        return True
-    return False
-
-
 def _extract_result(raw: Any, output_schema: dict | None) -> tuple[Any, str | None]:
     """
     Validate raw against output_schema (basic check only — just confirm top-level keys exist).
@@ -123,8 +114,10 @@ def _extract_result(raw: Any, output_schema: dict | None) -> tuple[Any, str | No
         return raw, None
 
     # schema present but shape doesn't match — return raw anyway with a warning
-    logger.warning("TinyFish result shape mismatch. required=%s got keys=%s", required,
-                   list(raw.keys()) if isinstance(raw, dict) else type(raw).__name__)
+    logger.warning(
+        "TinyFish result shape mismatch. required=%s got keys=%s", required,
+        list(raw.keys()) if isinstance(raw, dict) else type(raw).__name__,
+    )
     return raw, None  # still ok; caller can validate further
 
 
@@ -194,8 +187,10 @@ async def _run_sse(
 
                             if status != "COMPLETED" or err_obj:
                                 err_msg = _format_error(err_obj) if err_obj else f"Run status: {status}"
-                                logger.error("TinyFish run failed run_id=%s err=%s elapsed=%.1fs",
-                                             run_id, err_msg, elapsed)
+                                logger.error(
+                                    "TinyFish run failed run_id=%s err=%s elapsed=%.1fs",
+                                    run_id, err_msg, elapsed,
+                                )
                                 return TinyFishResult(
                                     ok=False, raw_result=raw, parsed_result=None,
                                     error=err_msg, elapsed_s=elapsed, run_id=run_id,
@@ -230,7 +225,10 @@ async def _run_sse(
         )
     except asyncio.CancelledError:
         elapsed = time.monotonic() - t0
-        logger.warning("TinyFish SSE run cancelled run_id=%s elapsed=%.1fs", run_id, elapsed)
+        logger.debug(
+            "TinyFish SSE run cancelled (timeout or external cancel) run_id=%s elapsed=%.1fs",
+            run_id, elapsed,
+        )
         raise  # re-raise so the event loop can clean up properly
 
 
@@ -263,6 +261,7 @@ async def run_tinyfish(
     output_schema: dict | None = None,
     timeout_s: int | None = None,
     on_event: Callable[[str], Coroutine | None] | None = None,
+    max_attempts: int = 2,
 ) -> TinyFishResult:
     """
     Run a TinyFish automation and return a TinyFishResult.
@@ -271,55 +270,64 @@ async def run_tinyfish(
         goal:          Natural-language instruction for the agent.
         url:           Target page URL.
         output_schema: Optional JSON-schema object for structured output.
-        timeout_s:     Client-side wall-clock timeout in seconds.
+        timeout_s:     Wall-clock timeout in seconds for ONE attempt.
                        Defaults to TINYFISH_TIMEOUT from config.
-        max_steps:     Optional step cap passed to agent_config.max_steps.
-                       Use a small value (e.g. 40) for simple single-page extractions
-                       to cut latency significantly. None uses the TinyFish default (150).
         on_event:      Optional async or sync callable called with each PROGRESS message.
+        max_attempts:  Total attempts (1 initial + retries). Timeouts are never retried.
 
     Returns:
         TinyFishResult with ok, raw_result, parsed_result, error, elapsed_s.
     """
     settings = get_settings()
     effective_timeout = timeout_s if timeout_s is not None else settings.tinyfish_timeout
+    result: TinyFishResult | None = None
 
-    max_attempts = 3  # 1 initial + 2 retries
-    last_result: TinyFishResult | None = None
+    for attempt in range(max_attempts):
+        if attempt > 0:
+            wait = 2 ** attempt
+            logger.info("TinyFish retry attempt=%d waiting=%ds", attempt + 1, wait)
+            await asyncio.sleep(wait)  # sleep OUTSIDE the semaphore so we don't block others
 
-    async with _get_semaphore():
-        for attempt in range(max_attempts):
-            if attempt > 0:
-                wait = 2 ** attempt  # 2s, 4s
-                logger.info("TinyFish retry attempt=%d waiting=%ds", attempt + 1, wait)
-                await asyncio.sleep(wait)
+        t0 = time.monotonic()
+        async with _get_semaphore():
+            try:
+                # Real wall-clock cap. httpx's timeout is per-read and SSE heartbeats
+                # keep resetting it, so it never fires on a long-running stream.
+                result = await asyncio.wait_for(
+                    _run_sse(goal, url, output_schema, effective_timeout, on_event),
+                    timeout=effective_timeout + 5,
+                )
+            except asyncio.TimeoutError:
+                elapsed = time.monotonic() - t0
+                logger.error("TinyFish hard wall-clock timeout after %.1fs url=%s", elapsed, url)
+                result = TinyFishResult(
+                    ok=False, raw_result=None, parsed_result=None,
+                    error=f"Client-side timeout after {effective_timeout}s",
+                    elapsed_s=elapsed,
+                )
 
-            result = await _run_sse(goal, url, output_schema, effective_timeout, on_event)
-            last_result = result
+        if result.ok or not _should_retry_result(result):
+            break
 
-            if result.ok:
-                return result
-
-            should_retry = (
-                attempt < max_attempts - 1
-                and _should_retry_result(result)
-            )
-            if not should_retry:
-                break
-
-        return last_result  # type: ignore[return-value]
+    return result  # type: ignore[return-value]
 
 
 def _should_retry_result(result: TinyFishResult) -> bool:
     """
     Return True only for errors that are worth retrying.
-    Conservative: we only retry on timeout or obvious server-side failures.
-    We never retry agent failures (bad goal/url) or billing failures.
+    Conservative: retry only obvious transient server-side failures.
+    Never retry timeouts (the run already used its full budget), agent
+    failures (bad goal/url), client errors, or billing failures.
     """
     err = (result.error or "").lower()
-    # Don't retry these — they need human intervention
-    no_retry_phrases = ("agent_failure", "billing", "site_blocked", "invalid_input",
-                        "invalid_api_key", "missing_api_key", "task_failed")
+    no_retry_phrases = (
+        "agent_failure", "billing", "site_blocked", "invalid_input",
+        "invalid_api_key", "missing_api_key", "task_failed",
+        "timeout", "timed out",
+    )
     if any(p in err for p in no_retry_phrases):
+        return False
+    # HTTP 4xx (except 429 rate limit) won't succeed on retry
+    if err.startswith("http 4") and not err.startswith("http 429"):
         return False
     return True

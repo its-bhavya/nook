@@ -116,6 +116,14 @@ class CandidateIssue(BaseModel):
     theme: Optional[str] = Field(None, description="Search theme that surfaced this issue, e.g. 'FastAPI/backend'")
     matched_skills: list[str] = Field(default_factory=list, description="Profile skill names that appear in title, labels or repo name")
     reason: Optional[str] = Field(None, description="One-sentence reason this issue fits the developer, set after ranking")
+    score: Optional[float] = Field(None, description="LLM relevance score 0–10 assigned during ranking")
+    # Enrichment fields captured during extraction (all optional)
+    primary_language: Optional[str] = Field(None, description="Repo primary programming language")
+    stars: Optional[int] = Field(None, description="Approximate star count if visible")
+    difficulty: Optional[str] = Field(None, description="Difficulty label if shown, e.g. 'easy', 'medium'")
+    domain: Optional[str] = Field(None, description="Domain or topic area, e.g. 'NLP', 'DevOps'")
+    tech_stack: list[str] = Field(default_factory=list, description="Tech stack tags visible on the source page")
+    summary: Optional[str] = Field(None, description="One-line issue summary captured during extraction")
 
 
 class DiscoverRequest(BaseModel):

@@ -5,18 +5,26 @@ Public entry point:
     discover_issues(profile, query, on_event) -> list[CandidateIssue]
 
 Pipeline:
-  1. Derive up to 3 distinct themes from the profile (code, not LLM).
-  2. Build one GitHub search URL per theme; run all in parallel.
-  3. Tag each candidate with theme + matched_skills (code, not LLM).
-  4. Validate, deduplicate, cap at 8 per search / 24 total.
-  5. Fall back to DISCOVERY_FALLBACK_URLS if GitHub returned nothing.
+  1. Derive themes from the profile (code, not LLM). Each theme uses exactly
+     ONE keyword for GitHub search.
+  2. GitHub searches + aggregator (goodfirstissue.org) run in parallel.
+  3. All searches share ONE global deadline (_DISCOVER_BUDGET_S). Each call gets
+     min(tinyfish_timeout, time remaining), so a slow run can use as long as it
+     needs without pushing the job past its limit.
+  4. Results are written to a shared sink as soon as each call returns, so when
+     the deadline hits we keep everything gathered so far.
+  5. If the themed GitHub searches return < 3 results, ONE shared label-only
+     fallback runs (the URL is identical for every theme, so it runs once).
+     It is skipped after a timeout or when too little budget remains.
+  6. Validate, deduplicate, cap at 8 per search / 24 total before ranking.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
 import re
-from datetime import datetime, timezone
+import time
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable, Coroutine, Optional
 from urllib.parse import quote_plus, urlparse
 
@@ -35,10 +43,18 @@ _ISSUE_URL_RE = re.compile(
     re.IGNORECASE,
 )
 _MAX_PER_SEARCH = 8
-_MAX_CANDIDATES = 24  # before ranking; ranking trims to 5
+_MAX_CANDIDATES = 24
+
+# Global time budget for the whole discover phase. Keep this below the job
+# limit (300s) by however long ranking and other post-processing need.
+_DISCOVER_BUDGET_S = 210
+# Don't start a fallback run unless at least this much budget is left.
+_MIN_FALLBACK_S = 60
+# Don't start any run with less than this left; it can't finish.
+_MIN_RUN_S = 15
 
 # ---------------------------------------------------------------------------
-# TinyFish output schema
+# TinyFish output schema — GitHub search
 # ---------------------------------------------------------------------------
 
 _SEARCH_OUTPUT_SCHEMA: dict = {
@@ -49,18 +65,21 @@ _SEARCH_OUTPUT_SCHEMA: dict = {
             "items": {
                 "type": "object",
                 "properties": {
-                    "url":             {"type": "string"},
-                    "title":           {"type": "string"},
-                    "repo":            {"type": "string"},
-                    "labels":          {"type": "array", "items": {"type": "string"}},
-                    "opened":          {"type": "string", "nullable": True},
-                    "comments":        {"type": "integer", "nullable": True},
-                    "claimant_signal": {
+                    "url":              {"type": "string"},
+                    "title":            {"type": "string"},
+                    "repo":             {"type": "string"},
+                    "labels":           {"type": "array", "items": {"type": "string"}},
+                    "opened":           {"type": "string", "nullable": True},
+                    "comments":         {"type": "integer", "nullable": True},
+                    "claimant_signal":  {
                         "type": "string",
                         "enum": ["none", "claimed", "linked_pr"],
                         "nullable": True,
                     },
-                    "state": {"type": "string", "nullable": True},
+                    "state":            {"type": "string", "nullable": True},
+                    "primary_language": {"type": "string", "nullable": True},
+                    "stars":            {"type": "integer", "nullable": True},
+                    "summary":          {"type": "string", "nullable": True},
                 },
                 "required": ["url", "title"],
             },
@@ -69,58 +88,117 @@ _SEARCH_OUTPUT_SCHEMA: dict = {
     "required": ["issues"],
 }
 
+# No step cap is available on our tier, so the goal text is the only lever on
+# agent behaviour. Keep it explicit about not exploring.
 _SEARCH_GOAL = (
-    "Extract all open GitHub issues listed on this search results page. "
+    "Extract the first 10 open GitHub issues listed on this search results page. "
     "For each issue return: url, title, repo (owner/repo), labels, opened date, "
-    "comment count, and claimant_signal (none/claimed/linked_pr). "
-    "Do not follow any links. Read only what is visible on this page."
+    "comment count, claimant_signal (none/claimed/linked_pr), primary_language, "
+    "stars (if visible), and a one-line summary of what the issue asks for. "
+    "Do not scroll, paginate, click, or follow any links. "
+    "Read only what is visible on initial page load, then return immediately."
 )
 
-_SCRAPE_TIMEOUT_S = 45
-
 # ---------------------------------------------------------------------------
-# Theme derivation (pure code — no LLM)
+# TinyFish output schema — goodfirstissue.org aggregator
 # ---------------------------------------------------------------------------
 
-# Broad area buckets: map lowercase skill/interest keyword fragments to a canonical area label.
-# First match wins. Keep this short; it only needs to separate obviously different domains.
+_AGG_OUTPUT_SCHEMA: dict = {
+    "type": "object",
+    "properties": {
+        "issues": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "url":              {"type": "string"},
+                    "title":            {"type": "string"},
+                    "repo":             {"type": "string"},
+                    "primary_language": {"type": "string", "nullable": True},
+                    "stars":            {"type": "integer", "nullable": True},
+                    "difficulty":       {"type": "string", "nullable": True},
+                    "domain":           {"type": "string", "nullable": True},
+                    "tech_stack":       {"type": "array", "items": {"type": "string"}},
+                    "claimed":          {"type": "boolean", "nullable": True},
+                    "comments":         {"type": "integer", "nullable": True},
+                    "opened":           {"type": "string", "nullable": True},
+                    "summary":          {"type": "string", "nullable": True},
+                },
+                "required": ["url", "title"],
+            },
+        }
+    },
+    "required": ["issues"],
+}
+
+_AGG_GOAL = (
+    "Extract the first 10 open-source issues listed on this page. "
+    "For each issue return: url, title, repo, primary_language, stars, "
+    "difficulty, domain, tech_stack (list of strings), claimed (bool), "
+    "comments, opened date, and a one-line summary. "
+    "Do not scroll, paginate, click, or follow links. "
+    "Read only what is visible on initial page load, then return immediately."
+)
+
+# ---------------------------------------------------------------------------
+# Theme derivation — one keyword per theme
+# ---------------------------------------------------------------------------
+
 _AREA_HINTS: list[tuple[str, str]] = [
-    # Web / API
     ("fastapi", "backend/API"), ("flask", "backend/API"), ("django", "backend/API"),
     ("rest", "backend/API"), ("graphql", "backend/API"), ("api", "backend/API"),
     ("express", "backend/API"), ("node", "backend/API"),
-    # Retrieval / vector
     ("rag", "retrieval/vector-DB"), ("vector", "retrieval/vector-DB"),
     ("embed", "retrieval/vector-DB"), ("retriev", "retrieval/vector-DB"),
     ("chroma", "retrieval/vector-DB"), ("pinecone", "retrieval/vector-DB"),
     ("weaviate", "retrieval/vector-DB"), ("faiss", "retrieval/vector-DB"),
     ("milvus", "retrieval/vector-DB"), ("pgvector", "retrieval/vector-DB"),
-    # LLM orchestration / agents
     ("crewai", "LLM-agents"), ("langchain", "LLM-agents"), ("langgraph", "LLM-agents"),
     ("autogen", "LLM-agents"), ("agent", "LLM-agents"), ("llm", "LLM-agents"),
     ("openai", "LLM-agents"), ("gemini", "LLM-agents"), ("anthropic", "LLM-agents"),
     ("llama", "LLM-agents"),
-    # Evaluation / testing
     ("eval", "evaluation/testing"), ("test", "evaluation/testing"),
     ("benchmark", "evaluation/testing"), ("pytest", "evaluation/testing"),
-    ("metric", "evaluation/testing"), ("assert", "evaluation/testing"),
-    # NLP / ML
+    ("metric", "evaluation/testing"),
     ("nlp", "NLP/ML"), ("transformers", "NLP/ML"), ("huggingface", "NLP/ML"),
     ("pytorch", "NLP/ML"), ("tensorflow", "NLP/ML"), ("sklearn", "NLP/ML"),
-    ("spacy", "NLP/ML"), ("nltk", "NLP/ML"), ("ml", "NLP/ML"),
-    # Data / infra
+    ("spacy", "NLP/ML"), ("nltk", "NLP/ML"),
     ("sql", "data/infra"), ("postgres", "data/infra"), ("mysql", "data/infra"),
     ("redis", "data/infra"), ("kafka", "data/infra"), ("spark", "data/infra"),
-    ("data", "data/infra"), ("pipeline", "data/infra"),
-    # Frontend / UI
+    ("pipeline", "data/infra"),
     ("react", "frontend/UI"), ("vue", "frontend/UI"), ("svelte", "frontend/UI"),
     ("typescript", "frontend/UI"), ("css", "frontend/UI"), ("ui", "frontend/UI"),
     ("frontend", "frontend/UI"),
-    # DevOps / tooling
-    ("docker", "DevOps/tooling"), ("kubernetes", "DevOps/tooling"), ("k8s", "DevOps/tooling"),
-    ("ci", "DevOps/tooling"), ("cd", "DevOps/tooling"), ("github action", "DevOps/tooling"),
+    ("docker", "DevOps/tooling"), ("kubernetes", "DevOps/tooling"),
     ("cli", "DevOps/tooling"), ("tool", "DevOps/tooling"),
 ]
+
+# Map area → best single keyword for GitHub search
+_AREA_TO_KEYWORD: dict[str, str] = {
+    "backend/API":         "FastAPI",
+    "retrieval/vector-DB": "RAG",
+    "LLM-agents":          "agent",
+    "evaluation/testing":  "eval",
+    "NLP/ML":              "transformers",
+    "data/infra":          "pipeline",
+    "frontend/UI":         "react",
+    "DevOps/tooling":      "cli",
+}
+
+# Map area → goodfirstissue.org topic slug (hardcoded — slugs are static)
+_AREA_TO_TOPIC: dict[str, str] = {
+    "LLM-agents":          "ai-infra-agents",
+    "retrieval/vector-DB": "ai-infra-agents",
+    "NLP/ML":              "ai-infra-agents",
+    "evaluation/testing":  "ai-infra-agents",
+    "backend/API":         "ai-infra-agents",
+    "data/infra":          "ai-infra-agents",
+}
+
+# Known valid topic slugs on goodfirstissue.org/languages/python
+_GFI_KNOWN_SLUGS: list[str] = ["ai-infra-agents"]
+
+_GFI_BASE = "https://www.goodfirstissue.org"
 
 
 def _area_for(token: str) -> str | None:
@@ -132,64 +210,54 @@ def _area_for(token: str) -> str | None:
 
 
 def _detect_language(profile: Profile) -> str:
-    """Best-guess primary language from skill names."""
+    """
+    Return the developer's primary programming language.
+    Python wins if present at experienced/familiar level.
+    Other languages are detected in order; inferred-level skills are
+    only considered if nothing higher-tier matches.
+    """
     lang_hints = [
+        ("python", "Python"),
         ("typescript", "TypeScript"), ("javascript", "JavaScript"),
         ("java", "Java"), ("kotlin", "Kotlin"), ("go", "Go"),
         ("rust", "Rust"), ("c++", "C++"), ("c#", "C#"),
         ("ruby", "Ruby"), ("php", "PHP"),
     ]
+    # First pass: experienced or familiar
+    for s in profile.skills:
+        if s.level == SkillLevel.inferred:
+            continue
+        name_l = s.name.lower()
+        for fragment, lang in lang_hints:
+            if fragment in name_l:
+                return lang
+    # Second pass: inferred
     for s in profile.skills:
         name_l = s.name.lower()
         for fragment, lang in lang_hints:
             if fragment in name_l:
                 return lang
-    return "Python"  # default
-
-
-def _skill_search_keywords(skill_name: str) -> str:
-    """Turn a skill name into compact GitHub search keywords."""
-    # Strip common noise words
-    noise = {"python", "javascript", "typescript"}
-    tokens = [t for t in re.split(r"[\s/\-_]+", skill_name.lower()) if t not in noise and len(t) > 1]
-    return "+".join(tokens[:3]) if tokens else skill_name.lower().replace(" ", "+")
+    return "Python"
 
 
 def derive_themes(profile: Profile, query: Optional[str]) -> list[tuple[str, str]]:
     """
-    Return a list of (theme_label, search_keyword_string) tuples.
-
-    Rules:
-    - If query provided: first slot = ("query", url-encoded query terms).
-    - Fill remaining slots (up to 3 total) from profile skills in order:
-      experienced → familiar, then interests.
-    - Each slot must map to a *different* area bucket (no duplicates).
-    - Do not use a skill as a theme if it appears only once across the whole
-      profile AND the user did not type it in the query.
-    - Always append one generic good-first-issue slot for the main language.
+    Return (theme_label, single_keyword) tuples — at most 2 themes.
+    Each keyword is ONE word suitable for GitHub search.
     """
     slots: list[tuple[str, str]] = []
     seen_areas: set[str] = set()
-    max_profile_slots = 2 if query else 3
+    max_profile_slots = 2 if not query else 1
 
-    # Count how many times each skill name appears (skills list can have duplicates
-    # if the LLM repeated itself; also count via evidence mentions is not reliable,
-    # so we count by name occurrences across skills list).
-    skill_count: dict[str, int] = {}
-    for s in profile.skills:
-        key = s.name.lower()
-        skill_count[key] = skill_count.get(key, 0) + 1
-
-    # Build ordered candidate tokens: experienced skills first, then familiar, then interests
-    ordered: list[tuple[str, str]] = []  # (token, level_or_interest)
+    # Ordered candidates: experienced → familiar → interests
+    ordered: list[str] = []
     for level in (SkillLevel.experienced, SkillLevel.familiar):
         for s in profile.skills:
             if s.level == level:
-                ordered.append((s.name, level.value))
-    for interest in profile.interests:
-        ordered.append((interest, "interest"))
+                ordered.append(s.name)
+    ordered.extend(profile.interests)
 
-    for token, origin in ordered:
+    for token in ordered:
         if len(slots) >= max_profile_slots:
             break
         area = _area_for(token)
@@ -197,162 +265,109 @@ def derive_themes(profile: Profile, query: Optional[str]) -> list[tuple[str, str
             continue
         if area in seen_areas:
             continue
-        # Skip single-occurrence skills (unless user typed it in the query)
-        if origin in ("experienced", "familiar"):
-            count = skill_count.get(token.lower(), 1)
-            in_query = query and token.lower() in query.lower()
-            if count == 1 and not in_query:
-                # Only skip if this area is not unique in the whole profile
-                # (i.e., there's another skill that maps to a different area we can use instead)
-                other_areas = {_area_for(s.name) for s in profile.skills if s.name.lower() != token.lower()}
-                remaining_areas = other_areas - seen_areas - {None}
-                if remaining_areas:
-                    continue  # skip, we have better options
         seen_areas.add(area)
-        slots.append((area, _skill_search_keywords(token)))
+        keyword = _best_keyword(token, area)
+        slots.append((area, keyword))
 
-    # Query slot goes first
     if query:
-        q_keywords = re.sub(r"[^\w\s]", "", query)
-        q_keywords = "+".join(q_keywords.split()[:5])
-        slots = [("query", q_keywords)] + slots
+        # Extract first meaningful word from query as keyword
+        words = [w for w in re.split(r"[\s,]+", query) if len(w) > 2]
+        q_keyword = words[0] if words else query[:20]
+        slots = [("query", q_keyword)] + slots
 
-    return slots
+    return slots[:2]
+
+
+def _best_keyword(token: str, area: str) -> str:
+    """Pick the single best GitHub search keyword for a token/area combo."""
+    clean = token.strip().split()[0]  # first word only
+    if len(clean) >= 3 and clean.lower() not in {"python", "javascript", "typescript", "the", "and"}:
+        return clean
+    return _AREA_TO_KEYWORD.get(area, clean)
 
 
 # ---------------------------------------------------------------------------
-# Search URL builder
+# GitHub search URL builders
 # ---------------------------------------------------------------------------
 
-def _build_search_url(keywords: str, language: str) -> str:
+def _build_search_url(keyword: str, language: str) -> str:
+    kw_enc = quote_plus(keyword)
     lang_enc = quote_plus(language)
-    base = (
-        f"https://github.com/search?q={keywords}"
+    return (
+        f"https://github.com/search?q={kw_enc}"
         f"+is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22"
-        f"+language%3A{lang_enc}"
+        f"+language%3A{lang_enc}+no%3Aassignee"
         f"&type=issues&s=updated&o=desc"
     )
-    return base
 
 
-def _build_generic_url(language: str) -> str:
+def _build_label_only_url(language: str) -> str:
+    """Fallback: no keyword, just label + language + no:assignee."""
     lang_enc = quote_plus(language)
     return (
         f"https://github.com/search?q=is%3Aissue+is%3Aopen"
-        f"+label%3A%22good+first+issue%22+language%3A{lang_enc}"
+        f"+label%3A%22good+first+issue%22+language%3A{lang_enc}+no%3Aassignee"
         f"&type=issues&s=updated&o=desc"
     )
 
 
 # ---------------------------------------------------------------------------
-# matched_skills computation (pure code — no LLM)
+# Date normalisation: "5 days ago" → ISO date
 # ---------------------------------------------------------------------------
 
-def compute_matched_skills(candidate: CandidateIssue, profile: Profile) -> list[str]:
-    """Case-insensitive match of profile skill names against title + labels + repo."""
-    haystack = " ".join([
-        candidate.title,
-        candidate.repo,
-        *candidate.labels,
-    ]).lower()
-    matched = []
-    for s in profile.skills:
-        if s.name.lower() in haystack:
-            matched.append(s.name)
-    return matched
-
-
-# ---------------------------------------------------------------------------
-# Reason validation and fallback
-# ---------------------------------------------------------------------------
-
-def _days_ago(opened: str | None) -> str | None:
-    if not opened:
-        return None
-    try:
-        dt = datetime.fromisoformat(opened.replace("Z", "+00:00"))
-        delta = (datetime.now(timezone.utc) - dt).days
-        if delta == 0:
-            return "today"
-        if delta == 1:
-            return "1 day ago"
-        return f"{delta} days ago"
-    except Exception:
-        return opened
-
-
-def _fallback_reason(c: CandidateIssue) -> str:
-    """Build a deterministic reason from structured fields."""
-    parts: list[str] = []
-
-    if c.matched_skills:
-        skills_str = " and ".join(c.matched_skills[:3])
-        parts.append(f"Matches your {skills_str} experience")
-    elif c.theme:
-        parts.append(f"Found via {c.theme} search")
-    else:
-        parts.append("Matches your profile")
-
-    age = _days_ago(c.opened)
-    if age:
-        parts.append(f"opened {age}")
-
-    if c.comments == 0:
-        parts.append("no comments yet")
-    elif c.comments == 1:
-        parts.append("1 comment")
-    else:
-        parts.append(f"{c.comments} comments")
-
-    return ", ".join(parts) + "."
-
-
-_BAD_PHRASES = re.compile(
-    r"\bgood first issue\b|\bbeginner\b",
-    re.IGNORECASE,
+_REL_DATE_RE = re.compile(
+    r"""
+    (?:(\d+)\s+second|(\d+)\s+minute|(\d+)\s+hour
+    |(\d+)\s+day|(\d+)\s+week|(\d+)\s+month|(\d+)\s+year)s?\s+ago
+    |yesterday|today|just\s+now
+    """,
+    re.VERBOSE | re.IGNORECASE,
 )
 
 
-def validate_reason(reason: str, c: CandidateIssue) -> bool:
-    """
-    Return True if the reason is acceptable.
-    Fail if:
-    - uses banned phrases ("good first issue", "beginner")
-    - claims a discussion but comments == 0
-    - mentions neither a matched skill/theme nor a candidate fact
-    """
-    if not reason or not reason.strip():
-        return False
-    if _BAD_PHRASES.search(reason):
-        return False
-    # Must not claim discussion/comments when there are none
-    if c.comments == 0 and re.search(r"\b(discussion|commented|comments)\b", reason, re.IGNORECASE):
-        return False
-    # Must mention at least one grounding signal
-    has_skill = any(s.lower() in reason.lower() for s in c.matched_skills) if c.matched_skills else False
-    has_theme = bool(c.theme and c.theme.lower() in reason.lower())
-    has_fact = bool(re.search(
-        r"\b(\d+\s*comment|\d+\s*day|label|opened|recent|last\s*week|no\s*comment)\b",
-        reason, re.IGNORECASE,
-    ))
-    if not (has_skill or has_theme or has_fact):
-        return False
-    return True
-
-
-# ---------------------------------------------------------------------------
-# Fallback URL helpers
-# ---------------------------------------------------------------------------
-
-def _get_fallback_urls() -> list[str]:
-    raw = get_settings().discovery_fallback_urls
+def _normalize_date(raw: str | None) -> str | None:
     if not raw:
-        return []
-    return [u.strip() for u in raw.split(",") if u.strip()]
+        return None
+    raw = raw.strip()
+    if not raw:
+        return None
+
+    # Already ISO-ish (YYYY-MM-DD or contains 'T')
+    if re.match(r"\d{4}-\d{2}-\d{2}", raw):
+        return raw[:10]
+    if "T" in raw:
+        return raw[:10]
+
+    m = _REL_DATE_RE.search(raw)
+    if m:
+        today = date.today()  # evaluated per call, not at import
+        seconds, minutes, hours, days, weeks, months, years = m.groups()
+        if seconds or minutes or hours or (raw.lower() in ("today", "just now")):
+            return today.isoformat()
+        if raw.lower() == "yesterday":
+            return (today - timedelta(days=1)).isoformat()
+        if days:
+            return (today - timedelta(days=int(days))).isoformat()
+        if weeks:
+            return (today - timedelta(weeks=int(weeks))).isoformat()
+        if months:
+            return (today - timedelta(days=int(months) * 30)).isoformat()
+        if years:
+            return (today - timedelta(days=int(years) * 365)).isoformat()
+
+    # Try common textual formats
+    for fmt in ("%b %d, %Y", "%d %b %Y", "%B %d, %Y", "%d %B %Y", "%Y/%m/%d", "%m/%d/%Y"):
+        try:
+            return datetime.strptime(raw, fmt).date().isoformat()
+        except ValueError:
+            continue
+
+    # Give up — return raw so nothing is lost
+    return raw
 
 
 # ---------------------------------------------------------------------------
-# Validation / parsing helpers
+# Extraction helpers
 # ---------------------------------------------------------------------------
 
 def _is_valid_issue_url(url: Any) -> bool:
@@ -367,10 +382,7 @@ def _repo_from_url(url: str) -> str:
 
 
 def _parse_claimant(raw: Any) -> ClaimantSignal:
-    mapping = {
-        "claimed": ClaimantSignal.claimed,
-        "linked_pr": ClaimantSignal.linked_pr,
-    }
+    mapping = {"claimed": ClaimantSignal.claimed, "linked_pr": ClaimantSignal.linked_pr}
     return mapping.get(str(raw or "").lower(), ClaimantSignal.none)
 
 
@@ -387,17 +399,36 @@ def _to_candidate(issue: dict, source: IssueSource, theme: str) -> CandidateIssu
     repo = (issue.get("repo") or _repo_from_url(url)).strip()
     labels = [str(l) for l in (issue.get("labels") or []) if l]
     comments = int(issue.get("comments") or 0)
-    opened = issue.get("opened") or None
+    opened = _normalize_date(issue.get("opened"))
+
+    # Aggregator claimed flag → claimant_signal
+    claimed_flag = issue.get("claimed")
+    if claimed_flag:
+        claimant = ClaimantSignal.claimed
+    else:
+        claimant = _parse_claimant(issue.get("claimant_signal"))
+
+    stars_raw = issue.get("stars")
+    stars = int(stars_raw) if stars_raw is not None else None
+
+    tech_stack = [str(t) for t in (issue.get("tech_stack") or []) if t]
+
     return CandidateIssue(
         url=url,
         repo=repo,
         title=title,
         labels=labels,
-        opened=str(opened) if opened else None,
+        opened=opened,
         comments=comments,
-        claimant_signal=_parse_claimant(issue.get("claimant_signal")),
+        claimant_signal=claimant,
         source=source,
         theme=theme,
+        primary_language=issue.get("primary_language") or None,
+        stars=stars,
+        difficulty=issue.get("difficulty") or None,
+        domain=issue.get("domain") or None,
+        tech_stack=tech_stack,
+        summary=issue.get("summary") or None,
     )
 
 
@@ -433,6 +464,246 @@ def _deduplicate(candidates: list[CandidateIssue]) -> list[CandidateIssue]:
 
 
 # ---------------------------------------------------------------------------
+# matched_skills computation (pure code — used as initial signal; LLM re-scores)
+# ---------------------------------------------------------------------------
+
+def compute_matched_skills(candidate: CandidateIssue, profile: Profile) -> list[str]:
+    haystack = " ".join([
+        candidate.title,
+        candidate.repo,
+        *candidate.labels,
+        candidate.summary or "",
+        candidate.domain or "",
+        " ".join(candidate.tech_stack),
+    ]).lower()
+    matched = []
+    for s in profile.skills:
+        if s.name.lower() in haystack:
+            matched.append(s.name)
+    return matched
+
+
+# ---------------------------------------------------------------------------
+# Reason / validation helpers (kept for rank.py)
+# ---------------------------------------------------------------------------
+
+def _days_ago(opened: str | None) -> str | None:
+    if not opened:
+        return None
+    try:
+        dt = datetime.fromisoformat(opened.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        delta = (datetime.now(timezone.utc) - dt).days
+        if delta == 0:
+            return "today"
+        if delta == 1:
+            return "1 day ago"
+        return f"{delta} days ago"
+    except Exception:
+        return opened
+
+
+def _fallback_reason(c: CandidateIssue) -> str:
+    parts: list[str] = []
+    if c.matched_skills:
+        parts.append(f"Matches your {' and '.join(c.matched_skills[:3])} experience")
+    elif c.theme:
+        parts.append(f"Found via {c.theme} search")
+    else:
+        parts.append("Matches your profile")
+    age = _days_ago(c.opened)
+    if age:
+        parts.append(f"opened {age}")
+    if c.comments == 0:
+        parts.append("no comments yet")
+    elif c.comments == 1:
+        parts.append("1 comment")
+    else:
+        parts.append(f"{c.comments} comments")
+    return ", ".join(parts) + "."
+
+
+_BAD_PHRASES = re.compile(r"\bgood first issue\b|\bbeginner\b", re.IGNORECASE)
+
+
+def validate_reason(reason: str, c: CandidateIssue) -> bool:
+    if not reason or not reason.strip():
+        return False
+    if _BAD_PHRASES.search(reason):
+        return False
+    if c.comments == 0 and re.search(r"\b(discussion|commented|comments)\b", reason, re.IGNORECASE):
+        return False
+    has_skill = any(s.lower() in reason.lower() for s in c.matched_skills) if c.matched_skills else False
+    has_theme = bool(c.theme and c.theme.lower() in reason.lower())
+    has_fact = bool(re.search(
+        r"\b(\d+\s*comment|\d+\s*day|label|opened|recent|last\s*week|no\s*comment|star|\d+/10)\b",
+        reason, re.IGNORECASE,
+    ))
+    return has_skill or has_theme or has_fact
+
+
+# ---------------------------------------------------------------------------
+# Deadline helpers
+# ---------------------------------------------------------------------------
+
+def _remaining(deadline: float) -> int:
+    """Whole seconds left in the shared discover budget (never negative)."""
+    return max(0, int(deadline - time.monotonic()))
+
+
+def _call_timeout(deadline: float) -> int:
+    """
+    Timeout for a single TinyFish call: the configured per-run timeout,
+    capped by whatever is left in the shared budget.
+    """
+    return min(get_settings().tinyfish_timeout, _remaining(deadline))
+
+
+# ---------------------------------------------------------------------------
+# Aggregator: fetch matching topic page using hardcoded slugs
+# ---------------------------------------------------------------------------
+
+def _pick_topic_slug(theme: str, available: list[str]) -> str | None:
+    """Map a theme to the closest available topic slug."""
+    default = _AREA_TO_TOPIC.get(theme)
+    if not available:
+        return default
+    for s in available:
+        if default and default in s:
+            return s
+    theme_words = set(re.split(r"[\W_]+", theme.lower()))
+    for slug in available:
+        slug_words = set(re.split(r"[\W_]+", slug.lower()))
+        if theme_words & slug_words:
+            return slug
+    for slug in available:
+        if "ai" in slug or "agent" in slug or "infra" in slug:
+            return slug
+    return available[0] if available else None
+
+
+async def _run_aggregator_search(
+    theme: str,
+    topic_slugs: list[str],
+    deadline: float,
+    sink: list[CandidateIssue],
+    on_event: Callable[[str], Coroutine | None] | None,
+) -> None:
+    slug = _pick_topic_slug(theme, topic_slugs)
+    if not slug:
+        logger.warning("No GFI topic slug found for theme %s", theme)
+        return
+    if _remaining(deadline) < _MIN_RUN_S:
+        logger.warning("[aggregator/%s] skipped, no budget left", theme)
+        return
+
+    url = f"{_GFI_BASE}/languages/python/topics/{slug}"
+    logger.info("[aggregator/%s] fetching %s", theme, url)
+    t0 = time.monotonic()
+
+    result = await run_tinyfish(
+        goal=_AGG_GOAL,
+        url=url,
+        output_schema=_AGG_OUTPUT_SCHEMA,
+        timeout_s=_call_timeout(deadline),
+    )
+
+    elapsed = time.monotonic() - t0
+    candidates = _extract_candidates(result, IssueSource.aggregator, theme, _MAX_PER_SEARCH)
+    sink.extend(candidates)  # visible immediately, even if we're cancelled later
+
+    logger.info(
+        "[aggregator/%s] url=%s results=%d elapsed=%.1fs error=%r",
+        theme, url, len(candidates), elapsed, result.error or None,
+    )
+    await _safe_emit(on_event, f"Searched {theme} (aggregator): {len(candidates)} issues")
+
+
+# ---------------------------------------------------------------------------
+# GitHub search runner with a single shared fallback
+# ---------------------------------------------------------------------------
+
+async def _run_github_search(
+    theme: str,
+    keyword: str,
+    language: str,
+    deadline: float,
+    sink: list[CandidateIssue],
+    state: dict[str, bool],
+    on_event: Callable[[str], Coroutine | None] | None,
+) -> None:
+    if _remaining(deadline) < _MIN_RUN_S:
+        logger.warning("[github/%s] skipped, no budget left", theme)
+        return
+
+    url = _build_search_url(keyword, language)
+    t0 = time.monotonic()
+    logger.info("[github/%s] keyword=%r url=%s", theme, keyword, url)
+
+    result = await run_tinyfish(
+        goal=_SEARCH_GOAL,
+        url=url,
+        output_schema=_SEARCH_OUTPUT_SCHEMA,
+        timeout_s=_call_timeout(deadline),
+    )
+
+    elapsed = time.monotonic() - t0
+    candidates = _extract_candidates(result, IssueSource.github_search, theme, _MAX_PER_SEARCH)
+    sink.extend(candidates)  # visible immediately, even if we're cancelled later
+    count = len(candidates)
+
+    logger.info(
+        "[github/%s] keyword=%r results=%d elapsed=%.1fs error=%r",
+        theme, keyword, count, elapsed, result.error or None,
+    )
+
+    # Label-only fallback: URL is identical for every theme, so run it at most
+    # once. Skip after a timeout (it would likely time out too) or when there
+    # isn't enough budget left to finish.
+    timed_out = "timeout" in (result.error or "").lower()
+    if (
+        count < 3
+        and not timed_out
+        and not state["fallback_started"]
+        and _remaining(deadline) > _MIN_FALLBACK_S
+    ):
+        state["fallback_started"] = True
+        logger.info("[github/%s] only %d results — running label-only fallback", theme, count)
+        t1 = time.monotonic()
+        retry = await run_tinyfish(
+            goal=_SEARCH_GOAL,
+            url=_build_label_only_url(language),
+            output_schema=_SEARCH_OUTPUT_SCHEMA,
+            timeout_s=_call_timeout(deadline),
+        )
+        extra = _extract_candidates(retry, IssueSource.github_search, theme, _MAX_PER_SEARCH)
+        sink.extend(extra)
+        count += len(extra)
+        logger.info(
+            "[github/%s] label-only fallback results=%d elapsed=%.1fs error=%r",
+            theme, len(extra), time.monotonic() - t1, retry.error or None,
+        )
+
+    await _safe_emit(on_event, f"Searched {theme}: {count} issues")
+
+
+# ---------------------------------------------------------------------------
+# Utility
+# ---------------------------------------------------------------------------
+
+async def _safe_emit(
+    on_event: Callable[[str], Coroutine | None] | None,
+    msg: str,
+) -> None:
+    logger.info("discover: %s", msg)
+    if on_event:
+        result = on_event(msg)
+        if asyncio.iscoroutine(result):
+            await result
+
+
+# ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
 
@@ -444,96 +715,74 @@ async def discover_issues(
     """
     Discover open GitHub issues matching the developer profile and optional query.
 
-    Returns up to _MAX_CANDIDATES validated CandidateIssue items, each tagged
-    with theme and matched_skills.
+    All searches run in parallel under one shared deadline. Whatever has been
+    collected when the deadline hits is returned.
+    Returns up to _MAX_CANDIDATES validated CandidateIssue items.
     """
-
-    async def _emit(msg: str) -> None:
-        logger.info("discover_issues: %s", msg)
-        if on_event:
-            result = on_event(msg)
-            if asyncio.iscoroutine(result):
-                await result
-
-    # ------------------------------------------------------------------
-    # Step 1: Derive themes and build search URLs (pure code)
-    # ------------------------------------------------------------------
-    await _emit("Building searches")
+    t_start = time.monotonic()
+    deadline = t_start + _DISCOVER_BUDGET_S
+    await _safe_emit(on_event, "Building searches")
 
     language = _detect_language(profile)
     themes = derive_themes(profile, query)
 
-    # Build one URL per theme; always add a generic fallback slot
-    search_tasks: list[tuple[str, str, IssueSource]] = []  # (theme, url, source)
-    for theme_label, keywords in themes:
-        url = _build_search_url(keywords, language)
-        search_tasks.append((theme_label, url, IssueSource.github_search))
-
-    # Generic good-first-issue search for the main language (always included)
-    search_tasks.append(("generic", _build_generic_url(language), IssueSource.github_search))
-
     logger.info(
-        "discover_issues: %d search tasks, language=%s, themes=%s",
-        len(search_tasks), language, [t[0] for t in search_tasks],
+        "discover_issues: language=%s themes=%s budget=%ds",
+        language, themes, _DISCOVER_BUDGET_S,
     )
 
-    # ------------------------------------------------------------------
-    # Step 2: Scrape all URLs in parallel
-    # ------------------------------------------------------------------
-    await _emit("Searching GitHub")
+    # Shared state: tasks append results here as soon as each TinyFish call returns
+    sink: list[CandidateIssue] = []
+    state = {"fallback_started": False}
 
-    async def _scrape(theme: str, url: str, source: IssueSource) -> list[CandidateIssue]:
-        tf = await run_tinyfish(
-            goal=_SEARCH_GOAL,
-            url=url,
-            output_schema=_SEARCH_OUTPUT_SCHEMA,
-            timeout_s=_SCRAPE_TIMEOUT_S,
+    tasks: list[asyncio.Task] = [
+        asyncio.create_task(
+            _run_github_search(label, keyword, language, deadline, sink, state, on_event)
         )
-        return _extract_candidates(tf, source, theme, _MAX_PER_SEARCH)
+        for label, keyword in themes
+    ]
+    # One aggregator search is enough
+    if themes:
+        tasks.append(
+            asyncio.create_task(
+                _run_aggregator_search(themes[0][0], _GFI_KNOWN_SLUGS, deadline, sink, on_event)
+            )
+        )
 
-    raw_results = await asyncio.gather(
-        *[_scrape(t, u, s) for t, u, s in search_tasks],
-        return_exceptions=True,
-    )
+    # -----------------------------------------------------------------------
+    # Wait until everything finishes OR the budget expires, whichever is first.
+    # Pending tasks are cancelled; anything already in `sink` is kept.
+    # -----------------------------------------------------------------------
+    if tasks:
+        done, pending = await asyncio.wait(tasks, timeout=_remaining(deadline) + 10)
 
-    candidates: list[CandidateIssue] = []
-    for i, r in enumerate(raw_results):
-        if isinstance(r, list):
-            candidates.extend(r)
-        else:
-            logger.warning("Search task %d (%s) failed: %s", i, search_tasks[i][0], r)
+        if pending:
+            for t in pending:
+                t.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+            await _safe_emit(
+                on_event,
+                f"Time budget reached, using results from {len(done)}/{len(tasks)} finished searches",
+            )
 
-    # ------------------------------------------------------------------
-    # Step 3: Tag matched_skills (pure code), deduplicate, cap
-    # ------------------------------------------------------------------
-    candidates = _deduplicate(candidates)
+        for t in done:
+            if not t.cancelled() and t.exception():
+                logger.warning("Search task failed: %s", t.exception())
+
+    # -----------------------------------------------------------------------
+    # Deduplicate, tag matched_skills, cap
+    # -----------------------------------------------------------------------
+    candidates = _deduplicate(sink)
     for c in candidates:
         c.matched_skills = compute_matched_skills(c, profile)
 
-    # ------------------------------------------------------------------
-    # Step 4: Fallback to aggregator if GitHub returned nothing
-    # ------------------------------------------------------------------
-    if not candidates:
-        fallback_urls = _get_fallback_urls()
-        if fallback_urls:
-            await _emit("GitHub extraction returned nothing — trying aggregator fallback")
-            agg_results = await asyncio.gather(
-                *[_scrape("fallback", u, IssueSource.aggregator) for u in fallback_urls],
-                return_exceptions=True,
-            )
-            for r in agg_results:
-                if isinstance(r, list):
-                    candidates.extend(r)
-            candidates = _deduplicate(candidates)
-            for c in candidates:
-                c.matched_skills = compute_matched_skills(c, profile)
-        else:
-            logger.warning("No candidates found and no fallback URLs configured")
-
     candidates = candidates[:_MAX_CANDIDATES]
 
-    await _emit(f"Found {len(candidates)} candidates")
-    await _emit("Validating")
+    total_elapsed = time.monotonic() - t_start
+    await _safe_emit(on_event, f"Found {len(candidates)} candidates in {total_elapsed:.1f}s")
 
-    logger.info("discover_issues complete: %d candidates", len(candidates))
+    logger.info(
+        "discover_issues complete: %d candidates, total_elapsed=%.1fs",
+        len(candidates), total_elapsed,
+    )
     return candidates

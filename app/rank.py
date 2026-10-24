@@ -4,10 +4,13 @@ Candidate ranker for Nook.
 rank_candidates(profile, candidates, top_n=5) -> list[CandidateIssue]
 
 Pipeline:
-  1. LLM scores fit and writes one-sentence reason per candidate.
-  2. Code enforces diversity: at most 1 per repo, at most 2 per theme.
-  3. Code assembles final list of top_n covering ≥ 3 themes when possible.
-  4. Reason validation: replace any weak/invalid reason with a deterministic fallback.
+  1. Single LLM call scores every candidate 0–10 and returns matched_skills.
+  2. Drop candidates scoring < 4 unless fewer than 3 would remain.
+  3. Diversity: prefer claimant_signal=="none", at most 1 per repo,
+     if > 2 final candidates share a theme swap lowest-scoring dups for
+     best from unused themes (only when those score >= 5).
+  4. Always return min(top_n, len(candidates)) results.
+  5. Reason validation: weak/invalid reasons get a deterministic fallback.
 """
 from __future__ import annotations
 
@@ -17,12 +20,12 @@ from collections import defaultdict
 
 from app.discover import _fallback_reason, validate_reason
 from app.llm import generate_json
-from app.models import CandidateIssue, Profile
+from app.models import CandidateIssue, ClaimantSignal, Profile
 
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# LLM schema and prompts
+# LLM schema
 # ---------------------------------------------------------------------------
 
 _RANKING_SCHEMA = {
@@ -33,11 +36,12 @@ _RANKING_SCHEMA = {
             "items": {
                 "type": "object",
                 "properties": {
-                    "issue":     {"type": "string"},
-                    "fit_hint":  {"type": "string", "enum": ["strong", "possible", "weak"]},
-                    "reason":    {"type": "string"},
+                    "issue":          {"type": "string"},
+                    "score":          {"type": "number"},
+                    "matched_skills": {"type": "array", "items": {"type": "string"}},
+                    "reason":         {"type": "string"},
                 },
-                "required": ["issue", "fit_hint", "reason"],
+                "required": ["issue", "score", "matched_skills", "reason"],
             },
         }
     },
@@ -70,7 +74,12 @@ def _build_ranking_prompt(profile: Profile, candidates: list[CandidateIssue]) ->
             "opened": c.opened,
             "comments": c.comments,
             "theme": c.theme,
-            "matched_skills": c.matched_skills,
+            "primary_language": c.primary_language,
+            "stars": c.stars,
+            "difficulty": c.difficulty,
+            "domain": c.domain,
+            "tech_stack": c.tech_stack,
+            "summary": c.summary,
         }
         for c in candidates
     ]
@@ -85,76 +94,115 @@ CANDIDATE ISSUES:
 
 For every candidate produce:
 - issue: the URL (copy exactly)
-- fit_hint: "strong" | "possible" | "weak"
+- score: integer 0–10 for relevance to this developer's skills, interests, and goals
+  (10 = perfect match, 0 = no overlap at all)
+- matched_skills: list of profile skill names or interests this issue plausibly exercises
+  (empty list if none — never invent skills)
 - reason: one sentence (≤ 30 words) that:
-    * mentions at least one matched_skill or theme AND one fact (comment count, age, label)
+    * mentions at least one matched_skill or theme AND one fact (comment count, age, label, score)
     * does NOT say "good first issue" or "beginner"
     * does NOT claim a discussion if comments is 0
     * does NOT describe content that was not provided
+    * if scored 2 or below write "score: X/10" to be transparent
 
 Return all {len(candidates)} candidates scored."""
 
 
 # ---------------------------------------------------------------------------
-# Diversity enforcement (pure code)
+# Selection with diversity
 # ---------------------------------------------------------------------------
 
-def _enforce_diversity(
-    scored: list[tuple[CandidateIssue, str, str]],
+def _select(
+    scored: list[tuple[CandidateIssue, float, list[str], str]],
     top_n: int,
 ) -> list[CandidateIssue]:
     """
-    scored: list of (candidate, fit_hint, reason) ordered best-first by LLM.
-    Rules:
-    - At most 1 issue per repo.
-    - At most 2 issues per theme.
-    - Final list covers ≥ 3 distinct themes when enough candidates allow it.
-    - Fill remaining slots by score order.
-    Returns up to top_n CandidateIssue objects with reason set.
-    """
-    repo_seen: set[str] = set()
-    theme_count: dict[str, int] = defaultdict(int)
-    selected: list[CandidateIssue] = []
+    scored: (candidate, score, matched_skills, reason) sorted best-first.
 
-    for c, fit_hint, reason in scored:
+    Rules:
+    - Drop score < 4 unless that would leave < 3 candidates.
+    - At most 1 per repo.
+    - Prefer claimant_signal == none.
+    - If > 2 share a theme in the final list, swap lowest-scoring dup
+      for best unused-theme candidate scoring >= 5.
+    - Always return min(top_n, len(scored)) results.
+    """
+    # Sort by (score desc, claimant none first)
+    scored.sort(key=lambda x: (x[1], x[0].claimant_signal == ClaimantSignal.none), reverse=True)
+
+    # Apply score floor
+    above = [(c, sc, ms, r) for c, sc, ms, r in scored if sc >= 4]
+    pool = above if len(above) >= 3 else scored
+
+    # Greedy pick: 1 per repo
+    repo_seen: set[str] = set()
+    selected: list[tuple[CandidateIssue, float, list[str], str]] = []
+    skipped: list[tuple[CandidateIssue, float, list[str], str]] = []
+
+    for item in pool:
+        c = item[0]
+        if c.repo in repo_seen:
+            skipped.append(item)
+            continue
+        repo_seen.add(c.repo)
+        selected.append(item)
         if len(selected) >= top_n:
             break
-        if c.repo in repo_seen:
-            continue
-        theme = c.theme or "generic"
-        if theme_count[theme] >= 2:
-            continue
-        # Validate / replace reason
+
+    # Fill remaining slots from skipped (different repo already accepted above? no — repo_seen)
+    # Actually skipped all had repo conflicts; try from remaining pool entries
+    if len(selected) < top_n:
+        all_repos = {item[0].repo for item in selected}
+        for item in pool:
+            if len(selected) >= top_n:
+                break
+            if item[0].repo not in all_repos and item not in selected:
+                all_repos.add(item[0].repo)
+                selected.append(item)
+
+    # Theme diversity: if > 2 share a theme, swap duplicates
+    theme_count: dict[str, int] = defaultdict(int)
+    for c, _, _, _ in selected:
+        theme_count[c.theme or "generic"] += 1
+
+    over_themes = {t for t, cnt in theme_count.items() if cnt > 2}
+    if over_themes:
+        # Find candidates from unused themes scoring >= 5
+        used_themes = {c.theme or "generic" for c, _, _, _ in selected}
+        alternates = [
+            item for item in pool
+            if item not in selected
+            and (item[0].theme or "generic") not in used_themes
+            and item[1] >= 5
+        ]
+        for over_theme in over_themes:
+            theme_items = [(i, item) for i, item in enumerate(selected)
+                           if (item[0].theme or "generic") == over_theme]
+            # Sort to find lowest scorer in over-represented theme
+            theme_items.sort(key=lambda x: x[1][1])
+            while (
+                theme_count[over_theme] > 2
+                and theme_items
+                and alternates
+            ):
+                idx, worst = theme_items.pop(0)
+                alt = alternates.pop(0)
+                selected[idx] = alt
+                theme_count[over_theme] -= 1
+                theme_count[alt[0].theme or "generic"] += 1
+
+    # Finalize: apply matched_skills + reason, enforce top_n
+    final = selected[:top_n]
+    result: list[CandidateIssue] = []
+    for c, sc, ms, reason in final:
+        c.score = round(sc, 1)
+        c.matched_skills = ms if ms else c.matched_skills
         if not validate_reason(reason, c):
             logger.debug("Replacing invalid reason for %s", c.url)
             reason = _fallback_reason(c)
         c.reason = reason
-        repo_seen.add(c.repo)
-        theme_count[theme] += 1
-        selected.append(c)
-
-    # Theme coverage check — if we have spare slots and uncovered themes, try to fill
-    if len(selected) < top_n:
-        covered_themes = {c.theme or "generic" for c in selected}
-        for c, fit_hint, reason in scored:
-            if len(selected) >= top_n:
-                break
-            if c in selected:
-                continue
-            if c.repo in repo_seen:
-                continue
-            theme = c.theme or "generic"
-            if theme in covered_themes:
-                continue  # only add if it brings a new theme
-            if not validate_reason(reason, c):
-                reason = _fallback_reason(c)
-            c.reason = reason
-            repo_seen.add(c.repo)
-            theme_count[theme] += 1
-            covered_themes.add(theme)
-            selected.append(c)
-
-    return selected[:top_n]
+        result.append(c)
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -167,9 +215,7 @@ async def rank_candidates(
     top_n: int = 5,
 ) -> list[CandidateIssue]:
     """
-    Rank candidates against the profile.
-
-    Returns up to top_n CandidateIssue objects with reason set.
+    Score and rank candidates. Returns up to top_n with reason and score set.
     """
     if not candidates:
         return []
@@ -178,24 +224,29 @@ async def rank_candidates(
     result = await generate_json(prompt, _RANKING_SCHEMA, system=_SYSTEM_PROMPT)
     scored_raw: list[dict] = result.get("scored", []) if result else []
 
-    # Build a URL → candidate lookup
     by_url: dict[str, CandidateIssue] = {c.url: c for c in candidates}
 
-    # Assemble (candidate, fit_hint, reason) keeping LLM order (best first)
-    scored: list[tuple[CandidateIssue, str, str]] = []
+    scored: list[tuple[CandidateIssue, float, list[str], str]] = []
+    seen_urls: set[str] = set()
+
     for item in scored_raw:
         url = item.get("issue", "")
         c = by_url.get(url)
         if c is None:
             continue
-        fit_hint = item.get("fit_hint", "possible")
+        try:
+            score = float(item.get("score") or 0)
+        except (TypeError, ValueError):
+            score = 0.0
+        ms = [str(s) for s in (item.get("matched_skills") or [])]
         reason = str(item.get("reason") or "").strip()
-        scored.append((c, fit_hint, reason))
+        scored.append((c, score, ms, reason))
+        seen_urls.add(url)
 
-    # Any candidates the LLM dropped — append at the end with "possible"
-    seen_urls = {c.url for c, _, _ in scored}
+    # Candidates the LLM dropped — append with score 0
     for c in candidates:
         if c.url not in seen_urls:
-            scored.append((c, "possible", ""))
+            scored.append((c, 0.0, [], ""))
 
-    return _enforce_diversity(scored, top_n)
+    target = min(top_n, len(candidates))
+    return _select(scored, target)
