@@ -1,9 +1,9 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
-import { Loader2, Plus, Trash2 } from "lucide-react";
+import { Loader2, Plus, Trash2, UploadCloud } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { TagInput } from "@/components/nook/tag-input";
-import { buildProfile, startDiscover } from "@/lib/api";
+import { buildProfile, parseResume, startDiscover } from "@/lib/api";
 import { setState, useNook } from "@/lib/store";
 import type { Profile, SkillLevel } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -40,6 +40,8 @@ function ProfilePage() {
   const navigate = useNavigate();
   const { profile } = useNook();
   const [resume, setResume] = useState("");
+  const [resumeFile, setResumeFile] = useState<File | null>(null);
+  const [parsing, setParsing] = useState(false);
   const [github, setGithub] = useState("");
   const [interests, setInterests] = useState<string[]>([]);
   const [goals, setGoals] = useState("");
@@ -54,18 +56,34 @@ function ProfilePage() {
   const [finding, setFinding] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const busy = parsing || building;
+
   const setProfile = (p: Profile) => setState({ profile: p });
 
   const onBuild = async () => {
     setError(null);
-    if (!resume.trim()) {
-      setError("Paste your resume text first, so Nook has something to read.");
+    let resumeText = resume;
+    if (resumeFile) {
+      setParsing(true);
+      try {
+        resumeText = await parseResume(resumeFile);
+        setResume(resumeText);
+      } catch (e) {
+        setError(`Couldn't parse your PDF. ${e instanceof Error ? e.message : ""}`);
+        setParsing(false);
+        return;
+      } finally {
+        setParsing(false);
+      }
+    }
+    if (!resumeText.trim()) {
+      setError("Upload your resume PDF first, so Nook has something to read.");
       return;
     }
     setBuilding(true);
     try {
       const p = await buildProfile({
-        resume_text: resume,
+        resume_text: resumeText,
         github_url: github.trim() || null,
         interests,
         goals: [goals.trim(), `Willingness to learn: ${learn}`].filter(Boolean).join("\n"),
@@ -113,16 +131,38 @@ function ProfilePage() {
 
       <div className="panel grid gap-6 md:grid-cols-2">
         <div className="md:col-span-2">
-          <Label htmlFor="resume" hint="Remove personal contact details before pasting.">
-            Resume text
+          <Label htmlFor="resume" hint="PDF only. Remove personal contact details before uploading.">
+            Resume
           </Label>
-          <textarea
-            id="resume"
-            className="field min-h-48 font-mono text-sm"
-            value={resume}
-            onChange={(e) => setResume(e.target.value)}
-            placeholder="Paste your resume as plain text…"
-          />
+          <label
+            htmlFor="resume"
+            className={cn(
+              "flex min-h-24 cursor-pointer flex-col items-center justify-center gap-2 rounded-md border-2 border-dashed border-border bg-night px-4 py-6 text-sm text-muted-foreground transition-colors hover:border-foreground/40",
+              resumeFile && "border-solid border-lime/60 text-foreground",
+            )}
+          >
+            {parsing ? (
+              <Loader2 className="size-6 shrink-0 animate-spin text-lime" />
+            ) : (
+              <UploadCloud className="size-6 shrink-0" />
+            )}
+            {resumeFile ? (
+              <span className="font-medium">{resumeFile.name}</span>
+            ) : (
+              <span>Click to upload your resume <span className="font-medium text-foreground">(.pdf)</span></span>
+            )}
+            <input
+              id="resume"
+              type="file"
+              accept=".pdf,application/pdf"
+              className="sr-only"
+              onChange={(e) => {
+                const f = e.target.files?.[0] ?? null;
+                setResumeFile(f);
+                if (!f) setResume("");
+              }}
+            />
+          </label>
         </div>
         <div>
           <Label htmlFor="gh" hint="Optional">GitHub profile URL</Label>
@@ -164,10 +204,40 @@ function ProfilePage() {
           </div>
         </div>
         <div className="md:col-span-2">
-          <Button onClick={onBuild} disabled={building} size="lg">
-            {building && <Loader2 className="animate-spin" />}
-            {building ? "Reading your resume…" : profile ? "Rebuild my profile" : "Build my profile"}
-          </Button>
+          <div className="space-y-3">
+            <Button
+              onClick={onBuild}
+              disabled={busy}
+              aria-busy={busy}
+              size="lg"
+              variant={busy ? "secondary" : "default"}
+              className="relative overflow-hidden disabled:opacity-100"
+            >
+              <span className="relative z-10 flex items-center gap-2">
+                {busy && <Loader2 className="animate-spin" />}
+                {parsing
+                  ? "Reading PDF…"
+                  : building
+                    ? "Building your profile…"
+                    : profile
+                      ? "Rebuild my profile"
+                      : "Build my profile"}
+              </span>
+              {busy && (
+                <span className="absolute inset-x-0 bottom-0 h-[3px] overflow-hidden bg-night/60">
+                  <span className="absolute inset-y-0 w-1/3 animate-slide rounded-full bg-lime" />
+                </span>
+              )}
+            </Button>
+
+            {busy && (
+              <p role="status" className="font-mono text-xs text-muted-foreground">
+                {parsing
+                  ? "Extracting text from your PDF…"
+                  : "Analysing your resume. This can take 10–30 seconds."}
+              </p>
+            )}
+          </div>
         </div>
       </div>
 
