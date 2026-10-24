@@ -12,15 +12,20 @@ class Settings(BaseSettings):
 
     # LLM
     llm_api_key: str = ""
-    llm_provider: str = "openai"  # e.g. openai | gemini | anthropic
+    llm_provider: str = "gemini"  # gemini | openai
+    llm_model: str = "gemini-3.8-flash"  # override via LLM_MODEL in .env
 
     # Feature flags
     demo_mode: bool = False  # When True, bypass live agents and return mock data
 
+    # Discovery fallback: comma-separated URLs to try when GitHub extraction returns nothing
+    # e.g. https://goodfirstissue.dev/language/python
+    discovery_fallback_urls: str = ""
+
     # Timeouts (seconds)
     tinyfish_timeout: int = 120   # Max wall-clock seconds per TinyFish run
     tinyfish_max_concurrent: int = 3  # Max parallel TinyFish runs
-    llm_timeout: int = 30
+    llm_timeout: int = 120  # Total seconds to wait for a Gemini response
 
     model_config = SettingsConfigDict(
         env_file=".env",

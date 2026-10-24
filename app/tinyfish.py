@@ -227,6 +227,10 @@ async def _run_sse(
             error=f"Client-side timeout after {elapsed:.0f}s",
             elapsed_s=elapsed, run_id=run_id,
         )
+    except asyncio.CancelledError:
+        elapsed = time.monotonic() - t0
+        logger.warning("TinyFish SSE run cancelled run_id=%s elapsed=%.1fs", run_id, elapsed)
+        raise  # re-raise so the event loop can clean up properly
 
 
 def _parse_sse_block(block: str) -> dict | None:

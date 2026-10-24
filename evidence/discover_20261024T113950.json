@@ -1,0 +1,207 @@
+{
+  "timestamp": "2026-10-24T11:39:50.224790+00:00",
+  "query": "python issues related to LLM agents or RAG",
+  "candidates": [
+    {
+      "url": "https://github.com/mahimailabs/voice-ai-skills/issues/20",
+      "repo": "mahimailabs/voice-ai-skills",
+      "title": "Adapter refresh: voice-agent-evals / LiveKit Agents",
+      "labels": [
+        "adapter",
+        "good first issue",
+        "hacktoberfest",
+        "help wanted"
+      ],
+      "opened": "Sep 26, 2026",
+      "comments": 1,
+      "claimant_signal": "none",
+      "source": "github_search"
+    },
+    {
+      "url": "https://github.com/guardianprotocol-ai/registry/issues/116",
+      "repo": "guardianprotocol-ai/registry",
+      "title": "Map AML.T0118.001: Autonomous AI Agent Communication: Direct Agent Communication",
+      "labels": [
+        "good first issue",
+        "season-1",
+        "track:patterns"
+      ],
+      "opened": "Oct 8, 2026",
+      "comments": 4,
+      "claimant_signal": "none",
+      "source": "github_search"
+    },
+    {
+      "url": "https://github.com/Cygnux-Labs/Tracekit/issues/349",
+      "repo": "Cygnux-Labs/Tracekit",
+      "title": "Coding agents: hooks for goose",
+      "labels": [
+        "good first issue",
+        "help wanted"
+      ],
+      "opened": "Oct 23, 2026",
+      "comments": 0,
+      "claimant_signal": "none",
+      "source": "github_search"
+    },
+    {
+      "url": "https://github.com/Cygnux-Labs/Tracekit/issues/348",
+      "repo": "Cygnux-Labs/Tracekit",
+      "title": "Coding agents: hooks for Crush",
+      "labels": [
+        "enhancement",
+        "good first issue",
+        "help wanted"
+      ],
+      "opened": "Oct 23, 2026",
+      "comments": 0,
+      "claimant_signal": "none",
+      "source": "github_search"
+    },
+    {
+      "url": "https://github.com/AutomatosAI/automatos-ai/issues/1086",
+      "repo": "AutomatosAI/automatos-ai",
+      "title": "Delete ~20 unreachable components in components/workflows/ (and agents/agent-coordination.tsx)",
+      "labels": [
+        "area: frontend",
+        "enhancement",
+        "good first issue"
+      ],
+      "opened": "Oct 9, 2026",
+      "comments": 1,
+      "claimant_signal": "none",
+      "source": "github_search"
+    },
+    {
+      "url": "https://github.com/Cygnux-Labs/Tracekit/issues/366",
+      "repo": "Cygnux-Labs/Tracekit",
+      "title": "Coding agents: hooks for Qwen Code",
+      "labels": [
+        "good first issue",
+        "help wanted"
+      ],
+      "opened": "Oct 24, 2026",
+      "comments": 0,
+      "claimant_signal": "none",
+      "source": "github_search"
+    },
+    {
+      "url": "https://github.com/RhinoSecurityLabs/cloudgoat/issues/462",
+      "repo": "RhinoSecurityLabs/cloudgoat",
+      "title": "bedrock_agent_hijacking: Deployment not possible due to Bedrock Agent being in Maintenance mode",
+      "labels": [
+        "good first issue"
+      ],
+      "opened": "Oct 12, 2026",
+      "comments": 4,
+      "claimant_signal": "none",
+      "source": "github_search"
+    },
+    {
+      "url": "https://github.com/RayenMlayeh/gsearch/issues/3",
+      "repo": "RayenMlayeh/gsearch",
+      "title": "Example: gsearch in a PydanticAI agent",
+      "labels": [
+        "documentation",
+        "good first issue"
+      ],
+      "opened": "Oct 18, 2026",
+      "comments": 1,
+      "claimant_signal": "none",
+      "source": "github_search"
+    },
+    {
+      "url": "https://github.com/katjabercic/mathswitch/issues/24",
+      "repo": "katjabercic/mathswitch",
+      "title": "Add coding agent mardown files",
+      "labels": [
+        "good first issue"
+      ],
+      "opened": "Oct 6, 2026",
+      "comments": 0,
+      "claimant_signal": "none",
+      "source": "github_search"
+    },
+    {
+      "url": "https://github.com/Entelligence-AI/agentplay/issues/30",
+      "repo": "Entelligence-AI/agentplay",
+      "title": "agentplay list: add --agents and --since filters",
+      "labels": [
+        "enhancement",
+        "good first issue"
+      ],
+      "opened": "Oct 23, 2026",
+      "comments": 1,
+      "claimant_signal": "none",
+      "source": "github_search"
+    },
+    {
+      "url": "https://github.com/eyadstein/taintwatch/issues/1",
+      "repo": "eyadstein/taintwatch",
+      "title": "Task 01: LlamaIndex RAG Document Ingestion Adapter",
+      "labels": [
+        "good first issue",
+        "integrations"
+      ],
+      "opened": "Oct 21, 2026",
+      "comments": 0,
+      "claimant_signal": "none",
+      "source": "github_search"
+    },
+    {
+      "url": "https://github.com/DAH-Projects-and-Innovations/RAG-DataAfriqueHub/issues/25",
+      "repo": "DAH-Projects-and-Innovations/RAG-DataAfriqueHub",
+      "title": "Architecture: remove the dead, duplicate RAG engine implementation (src/rag/engine.py)",
+      "labels": [
+        "enhancement",
+        "good first issue"
+      ],
+      "opened": "Sep 15, 2026",
+      "comments": 1,
+      "claimant_signal": "none",
+      "source": "github_search"
+    },
+    {
+      "url": "https://github.com/mehulpratapsing/ai-engineer-skill-stack/issues/3",
+      "repo": "mehulpratapsing/ai-engineer-skill-stack",
+      "title": "Add a reusable RAG evaluation scorecard",
+      "labels": [
+        "documentation",
+        "good first issue"
+      ],
+      "opened": "Oct 1, 2026",
+      "comments": 0,
+      "claimant_signal": "none",
+      "source": "github_search"
+    },
+    {
+      "url": "https://github.com/MahanteshPatil1214/FinPilot-AI/issues/4",
+      "repo": "MahanteshPatil1214/FinPilot-AI",
+      "title": "Expand the RAG evaluation corpus beyond 2 documents",
+      "labels": [
+        "enhancement",
+        "good first issue"
+      ],
+      "opened": "Oct 18, 2026",
+      "comments": 4,
+      "claimant_signal": "none",
+      "source": "github_search"
+    },
+    {
+      "url": "https://github.com/Ablaze005/-awesome-agentic-patterns-/issues/39",
+      "repo": "Ablaze005/-awesome-agentic-patterns-",
+      "title": "# Add Agentic RAG Pipeline Diagram",
+      "labels": [
+        "documentation",
+        "Easy",
+        "good first issue",
+        "help wanted",
+        "stale"
+      ],
+      "opened": "Sep 10, 2026",
+      "comments": 1,
+      "claimant_signal": "none",
+      "source": "github_search"
+    }
+  ]
+}
