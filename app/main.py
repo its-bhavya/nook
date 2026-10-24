@@ -8,8 +8,11 @@ from datetime import datetime, timezone
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
+from typing import Optional
 
 from app.config import get_settings
+from app.profile import build_profile as _build_profile
 from app.models import (
     DiscoverRequest,
     DiscoverResponse,
@@ -57,7 +60,6 @@ app.add_middleware(
 
 @app.get("/health", tags=["meta"], summary="Health check")
 def health():
-    """Returns 200 OK when the server is up."""
     return {"status": "ok"}
 
 
@@ -72,18 +74,17 @@ def health():
     summary="Extract a structured developer profile from resume text",
 )
 async def build_profile(body: ProfileRequest) -> Profile:
-    """
-    Accepts raw resume text plus preferences and returns a structured Profile.
-
-    In demo / mock mode the endpoint returns a realistic pre-built profile.
-    In production an LLM will extract skills (tiered as experienced | familiar | inferred),
-    interests, goals and environment from the resume text.
-    """
     settings = get_settings()
     if settings.demo_mode or not settings.llm_api_key:
         return MOCK_PROFILE
-    # TODO: wire up LLM extraction
-    return MOCK_PROFILE
+    return await _build_profile(
+        resume_text=body.resume_text,
+        github_url=body.github_url,
+        interests=body.interests,
+        goals=body.goals,
+        hours_per_week=body.hours_per_week,
+        spoken_languages=body.spoken_languages,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -99,11 +100,17 @@ async def build_profile(body: ProfileRequest) -> Profile:
 async def discover(body: DiscoverRequest) -> DiscoverResponse:
     """
     Accepts a developer profile and an optional plain-English query.
-    Returns a `job_id` immediately. Poll `GET /jobs/{id}` or stream
-    `GET /jobs/{id}/stream` for progress and the final candidate list.
+    Returns a job_id immediately. Poll GET /jobs/{id} or stream
+    GET /jobs/{id}/stream for progress and the final candidate list.
     """
+    settings = get_settings()
     job = job_store.create_job(JobKind.discover)
-    asyncio.create_task(_run_discover_mock(job.job_id))
+
+    if settings.demo_mode or not settings.tinyfish_api_key:
+        asyncio.create_task(_run_discover_mock(job.job_id))
+    else:
+        asyncio.create_task(job_store.run_discover_job(job.job_id, body.profile, body.query))
+
     return DiscoverResponse(job_id=job.job_id)
 
 
@@ -129,11 +136,18 @@ async def _run_discover_mock(job_id: str) -> None:
 async def investigate(body: InvestigateRequest) -> InvestigateResponse:
     """
     Accepts an issue URL and a developer profile.
-    Returns a `job_id` immediately. The agent reads the issue, linked PRs,
-    commits and docs, then produces a personalised InvestigationReport.
+    Returns a job_id immediately.
     """
+    settings = get_settings()
     job = job_store.create_job(JobKind.investigate)
-    asyncio.create_task(_run_investigate_mock(job.job_id))
+
+    if settings.demo_mode or not settings.tinyfish_api_key:
+        asyncio.create_task(_run_investigate_mock(job.job_id))
+    else:
+        asyncio.create_task(
+            job_store.run_investigate_job(job.job_id, body.issue_url, body.profile)
+        )
+
     return InvestigateResponse(job_id=job.job_id)
 
 
@@ -146,6 +160,51 @@ async def _run_investigate_mock(job_id: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# POST /investigate/batch
+# ---------------------------------------------------------------------------
+
+from pydantic import BaseModel, Field
+from typing import Optional
+
+
+class BatchInvestigateRequest(BaseModel):
+    issue_urls: list[str] = Field(..., description="List of GitHub issue URLs to investigate in parallel")
+    profile: Profile = Field(..., description="Developer profile used to personalise each report")
+
+
+class BatchInvestigateResponse(BaseModel):
+    jobs: list[InvestigateResponse] = Field(..., description="One job per requested issue URL, in order")
+
+
+@app.post(
+    "/investigate/batch",
+    response_model=BatchInvestigateResponse,
+    tags=["investigation"],
+    summary="Start parallel investigation jobs for multiple issues",
+)
+async def investigate_batch(body: BatchInvestigateRequest) -> BatchInvestigateResponse:
+    """
+    Accepts a list of issue URLs and a developer profile.
+    Creates one investigation job per URL and returns all job IDs immediately.
+    Parallel execution is rate-limited by the TinyFish concurrency semaphore.
+    """
+    settings = get_settings()
+    responses: list[InvestigateResponse] = []
+
+    for issue_url in body.issue_urls:
+        job = job_store.create_job(JobKind.investigate)
+        if settings.demo_mode or not settings.tinyfish_api_key:
+            asyncio.create_task(_run_investigate_mock(job.job_id))
+        else:
+            asyncio.create_task(
+                job_store.run_investigate_job(job.job_id, issue_url, body.profile)
+            )
+        responses.append(InvestigateResponse(job_id=job.job_id))
+
+    return BatchInvestigateResponse(jobs=responses)
+
+
+# ---------------------------------------------------------------------------
 # GET /jobs/{id}/stream  — SSE
 # ---------------------------------------------------------------------------
 
@@ -153,14 +212,12 @@ async def _run_investigate_mock(job_id: str) -> None:
     "/jobs/{job_id}/stream",
     tags=["jobs"],
     summary="Stream progress events for a job via Server-Sent Events",
-    response_description="text/event-stream of JSON progress events, ending with a 'done' event",
 )
 async def stream_job(job_id: str):
     """
-    Opens a Server-Sent Events stream for the given job.
-
-    Each event is a JSON object: `{"type": "progress"|"done"|"error", "message": "..."}`.
-    The stream closes after the `done` or `error` event.
+    SSE stream for the given job. Replays past events first, then streams
+    new ones as they arrive. Sends a keepalive comment every 15 seconds.
+    Closes with a done or failed event.
     """
     job = job_store.get_job(job_id)
     if job is None:
@@ -171,15 +228,25 @@ async def stream_job(job_id: str):
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",  # disable Nginx buffering
+            "X-Accel-Buffering": "no",
         },
     )
 
 
+_POLL_INTERVAL = 0.4   # seconds between polls
+_KEEPALIVE_EVERY = 15  # seconds between SSE keepalive comments
+
+
 async def _sse_generator(job_id: str):
-    """Yield SSE-formatted events, polling the job store until done or failed."""
-    seen = 0  # index of the last event we already emitted
-    poll_interval = 0.4  # seconds between polls
+    """
+    Yield SSE-formatted strings.
+    1. Replay all past events from the store.
+    2. Poll for new events until the job reaches a terminal state.
+    3. Send done / failed as the final event.
+    4. Emit SSE comment keepalives to prevent proxy timeouts.
+    """
+    seen = 0
+    last_keepalive = asyncio.get_event_loop().time()
 
     while True:
         job = job_store.get_job(job_id)
@@ -190,8 +257,17 @@ async def _sse_generator(job_id: str):
         # Emit any new events since we last checked
         new_events = job.events[seen:]
         for event in new_events:
-            yield _sse_event({"type": "progress", "message": event.message, "timestamp": event.timestamp})
+            yield _sse_event({
+                "type": "progress",
+                "message": event.message,
+                "timestamp": event.timestamp,
+            })
         seen += len(new_events)
+
+        now = asyncio.get_event_loop().time()
+        if now - last_keepalive >= _KEEPALIVE_EVERY:
+            yield ": keepalive\n\n"
+            last_keepalive = now
 
         if job.status.value == "done":
             yield _sse_event({"type": "done", "message": "Job completed", "result": job.result})
@@ -199,10 +275,10 @@ async def _sse_generator(job_id: str):
 
         if job.status.value == "failed":
             last_msg = job.events[-1].message if job.events else "Unknown error"
-            yield _sse_event({"type": "error", "message": last_msg})
+            yield _sse_event({"type": "failed", "message": last_msg})
             return
 
-        await asyncio.sleep(poll_interval)
+        await asyncio.sleep(_POLL_INTERVAL)
 
 
 def _sse_event(payload: dict) -> str:
@@ -220,10 +296,6 @@ def _sse_event(payload: dict) -> str:
     summary="Get the current status and result of a job",
 )
 async def get_job(job_id: str) -> JobStatus:
-    """
-    Returns the full JobStatus for the given job_id, including all events
-    and the final result once status is `done`.
-    """
     job = job_store.get_job(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail=f"Job {job_id!r} not found")

@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     llm_model: str = "gemini-3.8-flash"  # override via LLM_MODEL in .env
 
     # Feature flags
-    demo_mode: bool = False  # When True, bypass live agents and return mock data
+    demo_mode: bool = True  # When True, bypass live agents and return mock data
 
     # Discovery fallback: comma-separated URLs to try when GitHub extraction returns nothing
     # e.g. https://goodfirstissue.dev/language/python
