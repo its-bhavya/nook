@@ -1,3 +1,51 @@
+# ---- Secrets / environment ----
 .env
 .venv
 __pycache*
+.env.*
+!.env.example
+.venv
+venv/
+env/
+ENV/
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+.eggs/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+# ---- Frontend (defense-in-depth; also covered by Nook_frontend/.gitignore) ----
+node_modules/
+*.local
+.tanstack/
+.nitro
+.output
+.vinxi
+.wrangler/
+.dev.vars
+
+# ---- Logs ----
+logs/
+*.log
+
+# ---- OS files ----
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---- Editor / IDE ----
+.idea/
+*.swp
+*.swo
+*~

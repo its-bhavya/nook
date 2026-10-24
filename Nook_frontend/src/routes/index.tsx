@@ -1,0 +1,340 @@
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { useState } from "react";
+import { Loader2, Plus, Trash2 } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { TagInput } from "@/components/nook/tag-input";
+import { buildProfile, startDiscover } from "@/lib/api";
+import { setState, useNook } from "@/lib/store";
+import type { Profile, SkillLevel } from "@/lib/types";
+import { cn } from "@/lib/utils";
+
+export const Route = createFileRoute("/")({
+  head: () => ({
+    meta: [
+      { title: "Nook — Build your profile and find issues" },
+      { name: "description", content: "Paste your resume, set your preferences and let Nook find open-source issues that fit you." },
+      { property: "og:title", content: "Nook — Find your place in open source" },
+      { property: "og:description", content: "Paste your resume, set your preferences and let Nook find open-source issues that fit you." },
+    ],
+  }),
+  component: ProfilePage,
+});
+
+const LEARN = ["Stick to what I know", "Happy to learn a little", "Keen to learn something new"];
+const GROUPS: { level: SkillLevel; label: string }[] = [
+  { level: "experienced", label: "Experienced" },
+  { level: "familiar", label: "Familiar" },
+  { level: "inferred", label: "Inferred" },
+];
+
+function Label({ htmlFor, children, hint }: { htmlFor?: string; children: React.ReactNode; hint?: string }) {
+  return (
+    <label htmlFor={htmlFor} className="mb-2 block">
+      <span className="block text-sm font-semibold">{children}</span>
+      {hint && <span className="block text-xs text-muted-foreground">{hint}</span>}
+    </label>
+  );
+}
+
+function ProfilePage() {
+  const navigate = useNavigate();
+  const { demo, profile } = useNook();
+  const [resume, setResume] = useState("");
+  const [github, setGithub] = useState("");
+  const [interests, setInterests] = useState<string[]>([]);
+  const [goals, setGoals] = useState("");
+  const [hours, setHours] = useState(6);
+  const [languages, setLanguages] = useState<string[]>([]);
+  const [keys, setKeys] = useState<string[]>([]);
+  const [os, setOs] = useState("");
+  const [learn, setLearn] = useState(LEARN[1]);
+  const [mode, setMode] = useState<"search" | "profile">("search");
+  const [query, setQuery] = useState("");
+  const [building, setBuilding] = useState(false);
+  const [finding, setFinding] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const setProfile = (p: Profile) => setState({ profile: p });
+
+  const onBuild = async () => {
+    setError(null);
+    if (!demo && !resume.trim()) {
+      setError("Paste your resume text first, so Nook has something to read.");
+      return;
+    }
+    setBuilding(true);
+    try {
+      const p = await buildProfile(
+        {
+          resume_text: resume,
+          github_url: github.trim() || null,
+          interests,
+          goals: [goals.trim(), `Willingness to learn: ${learn}`].filter(Boolean).join("\n"),
+          hours_per_week: Math.max(1, hours),
+          spoken_languages: languages,
+          environment: { has_llm_api_keys: keys, os: os.trim() || null },
+        },
+        demo,
+      );
+      setProfile(p);
+    } catch (e) {
+      setError(`Couldn't build your profile. ${e instanceof Error ? e.message : ""}`);
+    } finally {
+      setBuilding(false);
+    }
+  };
+
+  const onFind = async () => {
+    if (!profile) return;
+    setError(null);
+    if (mode === "search" && !query.trim()) {
+      setError("Describe what you're looking for, or switch to profile-based discovery.");
+      return;
+    }
+    setFinding(true);
+    try {
+      const { job_id } = await startDiscover(profile, mode === "search" ? query.trim() : null, demo);
+      setState({ lastDiscoverJob: job_id });
+      navigate({ to: "/results/$jobId", params: { jobId: job_id } });
+    } catch (e) {
+      setError(`Couldn't start discovery. ${e instanceof Error ? e.message : ""}`);
+      setFinding(false);
+    }
+  };
+
+  return (
+    <div className="mx-auto max-w-5xl px-6 py-14">
+      <section className="mb-12">
+        <p className="eyebrow mb-4">Step 1 · Your profile</p>
+        <h1 className="display text-5xl md:text-7xl">
+          Find your place in <span className="keyword">open source</span>.
+        </h1>
+        <p className="mt-6 max-w-2xl text-lg leading-8 text-muted-foreground">
+          Tell Nook who you are. It finds issues, then investigates whether one is actually right for you.
+        </p>
+        <label className="mt-8 inline-flex cursor-pointer items-center gap-3 rounded-xl bg-night px-4 py-3">
+          <input
+            type="checkbox"
+            className="size-4 accent-lime"
+            checked={demo}
+            onChange={(e) => setState({ demo: e.target.checked })}
+          />
+          <span className="text-sm font-semibold">Demo mode</span>
+          <span className="text-xs text-muted-foreground">
+            {demo ? "Uses pre-saved results, no server needed" : "Calls the live Nook server"}
+          </span>
+        </label>
+      </section>
+
+      <div className="panel grid gap-6 md:grid-cols-2">
+        <div className="md:col-span-2">
+          <Label htmlFor="resume" hint="Remove personal contact details before pasting.">
+            Resume text
+          </Label>
+          <textarea
+            id="resume"
+            className="field min-h-48 font-mono text-sm"
+            value={resume}
+            onChange={(e) => setResume(e.target.value)}
+            placeholder={demo ? "Optional in demo mode. Persona A will be used." : "Paste your resume as plain text…"}
+          />
+        </div>
+        <div>
+          <Label htmlFor="gh" hint="Optional">GitHub profile URL</Label>
+          <input id="gh" className="field" value={github} onChange={(e) => setGithub(e.target.value)} placeholder="https://github.com/you" />
+        </div>
+        <div>
+          <Label htmlFor="hours">Available hours per week</Label>
+          <input id="hours" type="number" min={1} className="field" value={hours} onChange={(e) => setHours(Number(e.target.value))} />
+        </div>
+        <div>
+          <Label htmlFor="interests" hint="Press Enter after each one">Interests</Label>
+          <TagInput id="interests" value={interests} onChange={setInterests} placeholder="LLM agents, RAG…" />
+        </div>
+        <div>
+          <Label htmlFor="goals">Goals</Label>
+          <input id="goals" className="field" value={goals} onChange={(e) => setGoals(e.target.value)} placeholder="Ship a first PR to an agent framework" />
+        </div>
+        <div>
+          <Label htmlFor="langs" hint="Press Enter after each one">Spoken languages</Label>
+          <TagInput id="langs" value={languages} onChange={setLanguages} placeholder="English, Hindi…" />
+        </div>
+        <div>
+          <Label htmlFor="keys" hint="Which LLM APIs can you use? Never paste the keys themselves.">LLM API access</Label>
+          <TagInput id="keys" value={keys} onChange={setKeys} placeholder="Gemini, OpenAI…" />
+        </div>
+        <div>
+          <Label htmlFor="os" hint="Optional">Operating system</Label>
+          <input id="os" className="field" value={os} onChange={(e) => setOs(e.target.value)} placeholder="macOS, Linux, Windows" />
+        </div>
+        <div>
+          <Label>Willingness to learn</Label>
+          <div className="flex flex-col gap-2">
+            {LEARN.map((l) => (
+              <label key={l} className="flex cursor-pointer items-center gap-2 text-sm">
+                <input type="radio" name="learn" className="accent-lime" checked={learn === l} onChange={() => setLearn(l)} />
+                {l}
+              </label>
+            ))}
+          </div>
+        </div>
+        <div className="md:col-span-2">
+          <Button onClick={onBuild} disabled={building} size="lg">
+            {building && <Loader2 className="animate-spin" />}
+            {building ? "Reading your resume…" : profile ? "Rebuild my profile" : "Build my profile"}
+          </Button>
+        </div>
+      </div>
+
+      {error && (
+        <p role="alert" className="mt-6 rounded-xl border border-pink bg-night px-4 py-3 text-sm text-pink">
+          {error}
+          {!demo && (
+            <button className="ml-2 underline" onClick={() => { setState({ demo: true }); setError(null); }}>
+              Switch to demo mode
+            </button>
+          )}
+        </p>
+      )}
+
+      {profile && (
+        <>
+          <ProfileReview profile={profile} onChange={setProfile} />
+          <section className="panel mt-10 bg-violet-deep">
+            <p className="eyebrow mb-4">Step 3 · Discover</p>
+            <div className="mb-5 flex flex-wrap gap-2">
+              {(
+                [
+                  ["search", "Plain-English search"],
+                  ["profile", "Use my profile only"],
+                ] as const
+              ).map(([m, l]) => (
+                <button
+                  key={m}
+                  type="button"
+                  onClick={() => setMode(m)}
+                  className={cn(
+                    "rounded-md px-4 py-2 text-sm font-semibold",
+                    mode === m ? "bg-primary text-primary-foreground" : "bg-night text-foreground",
+                  )}
+                >
+                  {l}
+                </button>
+              ))}
+            </div>
+            {mode === "search" ? (
+              <input
+                className="field mb-5"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="small Python bug fixes in LLM tooling I can finish in a weekend"
+              />
+            ) : (
+              <p className="mb-5 text-sm text-muted-foreground">Nook will search using your skills, interests and hours alone.</p>
+            )}
+            <Button variant="lime" size="lg" onClick={onFind} disabled={finding}>
+              {finding && <Loader2 className="animate-spin" />}
+              {finding ? "Starting search…" : "Find issues"}
+            </Button>
+          </section>
+        </>
+      )}
+    </div>
+  );
+}
+
+function ProfileReview({ profile, onChange }: { profile: Profile; onChange: (p: Profile) => void }) {
+  const set = (patch: Partial<Profile>) => onChange({ ...profile, ...patch });
+  const updateSkill = (i: number, patch: Partial<Profile["skills"][number]>) =>
+    set({ skills: profile.skills.map((s, j) => (j === i ? { ...s, ...patch } : s)) });
+
+  return (
+    <section className="mt-10">
+      <p className="eyebrow mb-2">Step 2 · Review what Nook found</p>
+      <h2 className="text-3xl font-medium">Your profile</h2>
+      <p className="mt-2 text-sm text-muted-foreground">Edit anything that looks wrong before you continue.</p>
+
+      <div className="mt-6 grid gap-6 md:grid-cols-3">
+        {GROUPS.map((g) => {
+          const items = profile.skills.map((s, i) => ({ s, i })).filter(({ s }) => s.level === g.level);
+          return (
+            <div key={g.level} className="panel p-5">
+              <h3 className="mb-1 text-lg font-semibold">{g.label}</h3>
+              {g.level === "inferred" && (
+                <p className="mb-3 text-xs text-pink">
+                  Inferred means mentioned but not demonstrated. Nook does not treat it as proven skill.
+                </p>
+              )}
+              {items.length === 0 && <p className="text-sm text-muted-foreground">No skills in this group.</p>}
+              <ul className="space-y-4">
+                {items.map(({ s, i }) => (
+                  <li key={i} className="space-y-2 border-b border-border pb-4 last:border-0">
+                    <div className="flex gap-2">
+                      <input className="field py-1 font-semibold" value={s.name} aria-label="Skill name" onChange={(e) => updateSkill(i, { name: e.target.value })} />
+                      <button aria-label="Remove skill" className="text-muted-foreground hover:text-pink" onClick={() => set({ skills: profile.skills.filter((_, j) => j !== i) })}>
+                        <Trash2 className="size-4" />
+                      </button>
+                    </div>
+                    <input className="field py-1 text-xs italic" value={s.evidence} aria-label="Evidence" onChange={(e) => updateSkill(i, { evidence: e.target.value })} />
+                    <select
+                      aria-label="Skill level"
+                      className="w-full rounded-md bg-violet-deep px-3 py-1 text-xs"
+                      value={s.level}
+                      onChange={(e) => updateSkill(i, { level: e.target.value as SkillLevel })}
+                    >
+                      {GROUPS.map((x) => (
+                        <option key={x.level} value={x.level}>{x.label}</option>
+                      ))}
+                    </select>
+                  </li>
+                ))}
+              </ul>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="mt-3"
+                onClick={() => set({ skills: [...profile.skills, { name: "", level: g.level, evidence: "" }] })}
+              >
+                <Plus /> Add skill
+              </Button>
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="panel mt-6 grid gap-6 md:grid-cols-2">
+        <div>
+          <Label>Interests</Label>
+          <TagInput value={profile.interests} onChange={(v) => set({ interests: v })} />
+        </div>
+        <div>
+          <Label>Goals</Label>
+          <textarea className="field min-h-20" value={profile.goals} onChange={(e) => set({ goals: e.target.value })} />
+        </div>
+        <div>
+          <Label>Hours per week</Label>
+          <input type="number" min={1} className="field" value={profile.hours_per_week} onChange={(e) => set({ hours_per_week: Math.max(1, Number(e.target.value)) })} />
+        </div>
+        <div>
+          <Label>Spoken languages</Label>
+          <TagInput value={profile.spoken_languages} onChange={(v) => set({ spoken_languages: v })} />
+        </div>
+        <div>
+          <Label>LLM API access</Label>
+          <TagInput
+            value={profile.environment.has_llm_api_keys}
+            onChange={(v) => set({ environment: { ...profile.environment, has_llm_api_keys: v } })}
+          />
+        </div>
+        <div>
+          <Label>Operating system</Label>
+          <input
+            className="field"
+            value={profile.environment.os ?? ""}
+            onChange={(e) => set({ environment: { ...profile.environment, os: e.target.value || null } })}
+          />
+        </div>
+      </div>
+    </section>
+  );
+}
