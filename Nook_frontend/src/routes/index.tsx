@@ -38,13 +38,11 @@ function Label({ htmlFor, children, hint }: { htmlFor?: string; children: React.
 
 function ProfilePage() {
   const navigate = useNavigate();
-  const { profile } = useNook();
+  const { profile, prefetchDiscoverJob } = useNook();
   const [resume, setResume] = useState("");
   const [resumeFile, setResumeFile] = useState<File | null>(null);
   const [parsing, setParsing] = useState(false);
   const [github, setGithub] = useState("");
-  const [interests, setInterests] = useState<string[]>([]);
-  const [goals, setGoals] = useState("");
   const [hours, setHours] = useState(6);
   const [languages, setLanguages] = useState<string[]>([]);
   const [keys, setKeys] = useState<string[]>([]);
@@ -85,13 +83,20 @@ function ProfilePage() {
       const p = await buildProfile({
         resume_text: resumeText,
         github_url: github.trim() || null,
-        interests,
-        goals: [goals.trim(), `Willingness to learn: ${learn}`].filter(Boolean).join("\n"),
+        interests: [],
+        goals: `Willingness to learn: ${learn}`,
         hours_per_week: Math.max(1, hours),
         spoken_languages: languages,
         environment: { has_llm_api_keys: keys, os: os.trim() || null },
       });
       setProfile(p);
+      // Fire a profile-based discover job immediately in the background
+      try {
+        const { job_id } = await startDiscover(p, null);
+        setState({ prefetchDiscoverJob: job_id });
+      } catch {
+        // Non-fatal — user can still manually trigger discover
+      }
     } catch (e) {
       setError(`Couldn't build your profile. ${e instanceof Error ? e.message : ""}`);
     } finally {
@@ -108,8 +113,15 @@ function ProfilePage() {
     }
     setFinding(true);
     try {
-      const { job_id } = await startDiscover(profile, mode === "search" ? query.trim() : null);
-      setState({ lastDiscoverJob: job_id });
+      let job_id: string;
+      if (mode === "profile" && prefetchDiscoverJob) {
+        // Prefetch job already running — go straight to results
+        job_id = prefetchDiscoverJob;
+      } else {
+        const res = await startDiscover(profile, mode === "search" ? query.trim() : null);
+        job_id = res.job_id;
+      }
+      setState({ lastDiscoverJob: job_id, prefetchDiscoverJob: null });
       navigate({ to: "/results/$jobId", params: { jobId: job_id } });
     } catch (e) {
       setError(`Couldn't start discovery. ${e instanceof Error ? e.message : ""}`);
@@ -171,14 +183,6 @@ function ProfilePage() {
         <div>
           <Label htmlFor="hours">Available hours per week</Label>
           <input id="hours" type="number" min={1} className="field" value={hours} onChange={(e) => setHours(Number(e.target.value))} />
-        </div>
-        <div>
-          <Label htmlFor="interests" hint="Press Enter after each one">Interests</Label>
-          <TagInput id="interests" value={interests} onChange={setInterests} placeholder="LLM agents, RAG…" />
-        </div>
-        <div>
-          <Label htmlFor="goals">Goals</Label>
-          <input id="goals" className="field" value={goals} onChange={(e) => setGoals(e.target.value)} placeholder="Ship a first PR to an agent framework" />
         </div>
         <div>
           <Label htmlFor="langs" hint="Press Enter after each one">Spoken languages</Label>
@@ -353,37 +357,6 @@ function ProfileReview({ profile, onChange }: { profile: Profile; onChange: (p: 
       </div>
 
       <div className="panel mt-6 grid gap-6 md:grid-cols-2">
-        <div>
-          <Label>Interests</Label>
-          <TagInput value={profile.interests} onChange={(v) => set({ interests: v })} />
-        </div>
-        <div>
-          <Label>Goals</Label>
-          <textarea className="field min-h-20" value={profile.goals} onChange={(e) => set({ goals: e.target.value })} />
-        </div>
-        <div>
-          <Label>Hours per week</Label>
-          <input type="number" min={1} className="field" value={profile.hours_per_week} onChange={(e) => set({ hours_per_week: Math.max(1, Number(e.target.value)) })} />
-        </div>
-        <div>
-          <Label>Spoken languages</Label>
-          <TagInput value={profile.spoken_languages} onChange={(v) => set({ spoken_languages: v })} />
-        </div>
-        <div>
-          <Label>LLM API access</Label>
-          <TagInput
-            value={profile.environment.has_llm_api_keys}
-            onChange={(v) => set({ environment: { ...profile.environment, has_llm_api_keys: v } })}
-          />
-        </div>
-        <div>
-          <Label>Operating system</Label>
-          <input
-            className="field"
-            value={profile.environment.os ?? ""}
-            onChange={(e) => set({ environment: { ...profile.environment, os: e.target.value || null } })}
-          />
-        </div>
       </div>
     </section>
   );

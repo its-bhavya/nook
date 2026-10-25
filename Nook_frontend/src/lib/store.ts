@@ -14,6 +14,7 @@ interface State {
   candidates: Record<string, Candidate>;
   investigations: InvestigationEntry[];
   lastDiscoverJob: string | null;
+  prefetchDiscoverJob: string | null;
 }
 
 let state: State = {
@@ -21,6 +22,7 @@ let state: State = {
   candidates: {},
   investigations: [],
   lastDiscoverJob: null,
+  prefetchDiscoverJob: null,
 };
 const listeners = new Set<() => void>();
 const serverState = state;
