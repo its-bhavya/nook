@@ -17,9 +17,10 @@ class Settings(BaseSettings):
     llm_api_key: str = ""
     llm_provider: str = "gemini"  # gemini | openai
     llm_model: str = "gemini-3.8-flash"  # override via LLM_MODEL in .env
+    llm_base_url: str = ""  # optional OpenAI-compatible base URL override
 
     # Feature flags
-    demo_mode: bool = True  # When True, bypass live agents and return mock data
+    demo_mode: bool = False  # When True, bypass live agents and return mock data
 
     # Discovery fallback: comma-separated URLs to try when GitHub extraction returns nothing
     # e.g. https://goodfirstissue.dev/language/python

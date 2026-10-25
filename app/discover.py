@@ -265,6 +265,8 @@ async def _github_api_search(keyword: str | None, language: str) -> list[dict]:
     if token:
         headers["Authorization"] = f"Bearer {token}"
 
+    logger.info("GitHub API search: keyword=%r language=%s authenticated=%s", keyword, language, bool(token))
+
     try:
         async with httpx.AsyncClient(timeout=20) as client:
             resp = await client.get(
@@ -272,6 +274,7 @@ async def _github_api_search(keyword: str | None, language: str) -> list[dict]:
                 params={"q": q, "sort": "updated", "order": "desc", "per_page": 10},
                 headers=headers,
             )
+        logger.info("GitHub API response: status=%d keyword=%r results=%d", resp.status_code, keyword, len((resp.json().get("items") or [])) if resp.status_code == 200 else 0)
         if resp.status_code != 200:
             logger.warning("GitHub API search returned %d for keyword=%r", resp.status_code, keyword)
             return []
@@ -624,15 +627,22 @@ async def discover_issues(
 
     sink: list[CandidateIssue] = []
 
+    agg_theme = themes[0][0] if themes else "profile"
+    agg_name, agg_url_builder, agg_goal = _SOURCES[0]
+
     # ------------------------------------------------------------------
-    # Phase 1: GitHub REST API — one search per theme + one generic
+    # Phase 1: TinyFish (one aggregator) + GitHub API — fired in parallel
     # ------------------------------------------------------------------
-    await _safe_emit(on_event, "Searching GitHub")
+    await _safe_emit(on_event, "Searching GitHub and aggregators")
 
     gh_calls = [
         _github_api_search(keyword, language)
         for _, keyword in themes
     ] + [_github_api_search(None, language)]  # generic / label-only
+
+    agg_task = asyncio.create_task(
+        _run_source(agg_name, agg_url_builder(language), agg_goal, agg_theme, deadline, sink, on_event)
+    )
 
     gh_results = await asyncio.gather(*gh_calls, return_exceptions=True)
 
@@ -646,33 +656,13 @@ async def discover_issues(
             if c:
                 sink.append(c)
 
-    # ------------------------------------------------------------------
-    # Phase 2: TinyFish aggregator searches (parallel tasks)
-    # ------------------------------------------------------------------
-    agg_theme = themes[0][0] if themes else "profile"
-
-    tasks: list[asyncio.Task] = [
-        asyncio.create_task(
-            _run_source(name, url_builder(language), goal, agg_theme, deadline, sink, on_event)
-        )
-        for name, url_builder, goal in _SOURCES
-    ]
-
-    if tasks:
-        done, pending = await asyncio.wait(tasks, timeout=_remaining(deadline) + 5)
-
-        if pending:
-            for t in pending:
-                t.cancel()
-            await asyncio.gather(*pending, return_exceptions=True)
-            await _safe_emit(
-                on_event,
-                f"Time budget reached, using results from {len(done)}/{len(tasks)} finished searches",
-            )
-
-        for t in done:
-            if not t.cancelled() and t.exception():
-                logger.warning("Search task failed: %s", t.exception())
+    # Wait for the aggregator task (it was already running during the GitHub calls)
+    try:
+        await asyncio.wait_for(asyncio.shield(agg_task), timeout=_remaining(deadline))
+    except (asyncio.TimeoutError, asyncio.CancelledError):
+        agg_task.cancel()
+        await asyncio.gather(agg_task, return_exceptions=True)
+        await _safe_emit(on_event, "Aggregator search timed out, using GitHub results")
 
     # ------------------------------------------------------------------
     # Deduplicate, tag matched_skills, cap

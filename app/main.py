@@ -11,7 +11,7 @@ from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-from typing import Optional
+from typing import Any, Optional
 
 import app.ai_gateway as ai_gateway
 import app.db as db
@@ -235,7 +235,7 @@ async def discover(body: DiscoverRequest) -> DiscoverResponse:
     if settings.demo_mode or not settings.tinyfish_api_key:
         asyncio.create_task(_run_discover_mock(job.job_id))
     else:
-        asyncio.create_task(job_store.run_discover_job(job.job_id, body.profile, body.query))
+        asyncio.create_task(_run_discover_live(job.job_id, body.profile, body.query))
 
     return DiscoverResponse(job_id=job.job_id)
 
@@ -250,6 +250,22 @@ async def _persist(job_id: str) -> None:
             await db.save_job(job)
     except Exception as exc:  # noqa: BLE001
         logger.warning("persist job %s failed (non-fatal): %s", job_id, exc)
+
+
+async def _run_discover_live(job_id: str, profile: Any, query: str | None) -> None:
+    """Run the real discover pipeline and persist state at start and finish."""
+    await _persist(job_id)  # status: running (set inside run_discover_job)
+    await job_store.run_discover_job(job_id, profile, query)
+    await _persist(job_id)  # status: done or failed
+
+
+async def _run_investigate_live(
+    job_id: str, issue_url: str, profile: Any, persona_id: str | None
+) -> None:
+    """Run the real investigate pipeline and persist state at start and finish."""
+    await _persist(job_id)  # status: running (set inside run_investigate_job)
+    await job_store.run_investigate_job(job_id, issue_url, profile, persona_id)
+    await _persist(job_id)  # status: done or failed
 
 
 async def _run_discover_mock(job_id: str) -> None:
@@ -289,7 +305,7 @@ async def investigate(body: InvestigateRequest) -> InvestigateResponse:
         asyncio.create_task(_run_investigate_mock(job.job_id, body.issue_url, body.persona_id))
     else:
         asyncio.create_task(
-            job_store.run_investigate_job(job.job_id, body.issue_url, body.profile, body.persona_id)
+            _run_investigate_live(job.job_id, body.issue_url, body.profile, body.persona_id)
         )
 
     return InvestigateResponse(job_id=job.job_id)
