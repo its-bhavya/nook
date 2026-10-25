@@ -177,7 +177,7 @@ function ProfilePage() {
           </label>
         </div>
         <div>
-          <Label htmlFor="gh" hint="Optional">GitHub profile URL</Label>
+          <Label htmlFor="gh">GitHub profile URL</Label>
           <input id="gh" className="field" value={github} onChange={(e) => setGithub(e.target.value)} placeholder="https://github.com/you" />
         </div>
         <div>

@@ -174,6 +174,8 @@ async def build_profile(body: ProfileRequest) -> Profile:
     if settings.demo_mode:
         return MOCK_PROFILE
 
+    profile: Profile | None = None
+
     # 1) Neon AI Gateway
     if ai_gateway.is_configured():
         extracted = await ai_gateway.extract_profile(
@@ -188,14 +190,14 @@ async def build_profile(body: ProfileRequest) -> Profile:
         )
         if extracted:
             try:
-                return Profile(**extracted)
+                profile = Profile(**extracted)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("LLM returned an invalid profile shape; falling back: %s", exc)
 
-    # 2) Direct LLM via LLM_API_KEY
-    if settings.llm_api_key:
+    # 2) Direct LLM via LLM_API_KEY (also handles GitHub enrichment internally)
+    if profile is None and settings.llm_api_key:
         try:
-            return await _build_profile(
+            profile = await _build_profile(
                 resume_text=body.resume_text,
                 github_url=body.github_url,
                 interests=body.interests,
@@ -208,7 +210,20 @@ async def build_profile(body: ProfileRequest) -> Profile:
             logger.warning("Direct LLM profile build failed; using mock: %s", exc)
 
     # 3) Fallback
-    return MOCK_PROFILE
+    if profile is None:
+        return MOCK_PROFILE
+
+    # GitHub enrichment for the AI Gateway path (path 2 does it internally)
+    if body.github_url and ai_gateway.is_configured():
+        try:
+            from app.github_profile import fetch_github_signals, merge_github_into_profile
+            sig = await fetch_github_signals(body.github_url)
+            if sig is not None:
+                merge_github_into_profile(profile, sig)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("GitHub enrichment failed (non-fatal): %s", exc)
+
+    return profile
 
 
 # ---------------------------------------------------------------------------

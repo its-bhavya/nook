@@ -9,10 +9,12 @@ Extracts skills into three tiers:
   - inferred: implied by adjacent skills or context but not explicitly shown
 
 Personal contact details (phone, email) are stripped before storage.
-GitHub URL is stored as a plain string — no API calls are made.
+If a github_url is provided, GitHub API signals are fetched and merged into
+the profile after the resume-based build.  GitHub failures are silent.
 """
 from __future__ import annotations
 
+import asyncio
 import re
 
 from app.llm import generate_json
@@ -103,13 +105,21 @@ async def build_profile(
     Build a structured Profile from resume text and user-supplied preferences.
 
     - Strips PII (email, phone) before processing.
-    - Does not call GitHub APIs; github_url is stored as-is.
     - Classifies skills into experienced / familiar / inferred tiers.
+    - If github_url is provided, GitHub signals are fetched and merged in.
+      Any GitHub failure is silently ignored.
     - environment_override fields win over anything the LLM might have guessed.
     """
-    clean_resume = _strip_pii(resume_text)
-    prompt = _build_extraction_prompt(clean_resume)
+    from app.github_profile import fetch_github_signals, merge_github_into_profile
 
+    clean_resume = _strip_pii(resume_text)
+
+    # Start GitHub fetch concurrently with the LLM call
+    gh_task = None
+    if github_url:
+        gh_task = asyncio.create_task(fetch_github_signals(github_url))
+
+    prompt = _build_extraction_prompt(clean_resume)
     result = await generate_json(prompt, _SKILL_EXTRACTION_SCHEMA, system=_SYSTEM_PROMPT)
 
     skills = [
@@ -133,7 +143,7 @@ async def build_profile(
         if environment_override.os is not None:
             environment.os = environment_override.os
 
-    return Profile(
+    profile = Profile(
         skills=skills,
         interests=interests,
         goals=goals,
@@ -141,3 +151,14 @@ async def build_profile(
         spoken_languages=spoken_languages,
         environment=environment,
     )
+
+    # Await GitHub signals and merge them in (silently ignore any failure)
+    if gh_task is not None:
+        try:
+            sig = await gh_task
+            if sig is not None:
+                merge_github_into_profile(profile, sig)
+        except Exception:
+            pass
+
+    return profile
