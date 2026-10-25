@@ -5,9 +5,11 @@
 Nook helps a developer decide whether a specific open-source issue is right for *them*. It discovers candidate issues matching your profile and investigates each one with a personalised, source-linked report — separating what sources actually say from what Nook infers and what it could not verify.
 
 **Tagline:** Find your place in open source.  
-**Stack:** Python · FastAPI · TinyFish · LLM (Gemini / OpenAI-compatible) · React frontend
+**Stack:** Python · FastAPI · TinyFish · LLM (Gemini) · React frontend
 
 ---
+## Architecture 
+<img width="8192" height="6736" alt="GitHub Issue Discovery Pipeline-2026-10-25-051124" src="https://github.com/user-attachments/assets/2f0b4852-9b57-4229-8e11-2f96ea92b681" />
 
 ## How it works
 
