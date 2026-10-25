@@ -7,6 +7,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
+    # GitHub
+    github_token: str = ""
+
     # TinyFish
     tinyfish_api_key: str = ""
 
