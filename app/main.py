@@ -3,7 +3,9 @@ Nook — FastAPI application entry point.
 """
 import asyncio
 import json
-from datetime import datetime, timezone
+import logging
+from contextlib import asynccontextmanager
+from datetime import datetime, timezone  # noqa: F401  (kept for parity with jobs.py timestamps)
 
 from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
@@ -11,6 +13,9 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from typing import Optional
 
+import app.ai_gateway as ai_gateway
+import app.db as db
+import app.storage as storage
 from app.config import get_settings
 from app.profile import build_profile as _build_profile
 from app.models import (
@@ -32,9 +37,24 @@ from app.mock_data import (
     MOCK_REPORTS,
 )
 
+logger = logging.getLogger(__name__)
+
 # ---------------------------------------------------------------------------
 # App setup
 # ---------------------------------------------------------------------------
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """Best-effort Neon service init — never crash startup so the app stays debuggable."""
+    try:
+        await db.init_schema()
+        logger.info("Neon Postgres schema initialized")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Neon Postgres schema init failed (non-fatal): %s", exc)
+    yield
+    await db.close_pool()
+
 
 app = FastAPI(
     title="Nook API",
@@ -43,6 +63,7 @@ app = FastAPI(
         "It discovers candidate issues via TinyFish and investigates each one with a personalised report."
     ),
     version="0.1.0",
+    lifespan=lifespan,
 )
 
 app.add_middleware(
@@ -61,6 +82,46 @@ app.add_middleware(
 @app.get("/health", tags=["meta"], summary="Health check")
 def health():
     return {"status": "ok"}
+
+
+@app.get(
+    "/health/services",
+    tags=["meta"],
+    summary="Status of each wired Neon service (Postgres, Object Storage, AI Gateway)",
+)
+async def health_services():
+    """Report the live status of the three Neon services wired into the app."""
+    settings = get_settings()
+    report: dict = {}
+
+    # Postgres
+    if settings.database_url:
+        ok = await db.ping()
+        pg = {"configured": True, "ok": ok}
+        if ok:
+            try:
+                pg["jobs_rows"] = await db.count_jobs()
+            except Exception as exc:  # noqa: BLE001
+                pg["jobs_rows_error"] = str(exc)
+        report["postgres"] = pg
+    else:
+        report["postgres"] = {"configured": False, "ok": False}
+
+    # Object Storage
+    if storage.is_configured():
+        report["object_storage"] = {
+            "configured": True,
+            "ok": storage.head_bucket(),
+            "bucket": storage.bucket_name(),
+        }
+    else:
+        report["object_storage"] = {"configured": False, "ok": False}
+
+    # LLM (Neon AI Gateway when provisioned, else a direct LLM via LLM_API_KEY).
+    # Used by POST /profile; status() never makes a paid call.
+    report["llm"] = await ai_gateway.status()
+
+    return report
 
 
 # ---------------------------------------------------------------------------
@@ -100,18 +161,54 @@ async def parse_resume(file: UploadFile = File(...)) -> dict:
     summary="Extract a structured developer profile from resume text",
 )
 async def build_profile(body: ProfileRequest) -> Profile:
+    """
+    Accepts raw resume text plus preferences and returns a structured Profile.
+
+    Real extraction runs through the Neon AI Gateway (when provisioned) or a
+    direct LLM (LLM_API_KEY). The mock profile is only a fallback — used in
+    demo mode, when no LLM is configured, the call fails, or the response
+    won't validate.
+    """
     settings = get_settings()
-    if settings.demo_mode or not settings.llm_api_key:
+
+    if settings.demo_mode:
         return MOCK_PROFILE
-    return await _build_profile(
-        resume_text=body.resume_text,
-        github_url=body.github_url,
-        interests=body.interests,
-        goals=body.goals,
-        hours_per_week=body.hours_per_week,
-        spoken_languages=body.spoken_languages,
-        environment_override=body.environment,
-    )
+
+    # 1) Neon AI Gateway
+    if ai_gateway.is_configured():
+        extracted = await ai_gateway.extract_profile(
+            body.resume_text,
+            {
+                "interests": body.interests,
+                "goals": body.goals,
+                "hours_per_week": body.hours_per_week,
+                "spoken_languages": body.spoken_languages,
+                "environment": body.environment,
+            },
+        )
+        if extracted:
+            try:
+                return Profile(**extracted)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("LLM returned an invalid profile shape; falling back: %s", exc)
+
+    # 2) Direct LLM via LLM_API_KEY
+    if settings.llm_api_key:
+        try:
+            return await _build_profile(
+                resume_text=body.resume_text,
+                github_url=body.github_url,
+                interests=body.interests,
+                goals=body.goals,
+                hours_per_week=body.hours_per_week,
+                spoken_languages=body.spoken_languages,
+                environment_override=body.environment,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Direct LLM profile build failed; using mock: %s", exc)
+
+    # 3) Fallback
+    return MOCK_PROFILE
 
 
 # ---------------------------------------------------------------------------
@@ -129,9 +226,11 @@ async def discover(body: DiscoverRequest) -> DiscoverResponse:
     Accepts a developer profile and an optional plain-English query.
     Returns a job_id immediately. Poll GET /jobs/{id} or stream
     GET /jobs/{id}/stream for progress and the final candidate list.
+    The job's lifecycle is mirrored to Neon Postgres.
     """
     settings = get_settings()
     job = job_store.create_job(JobKind.discover)
+    await _persist(job.job_id)
 
     if settings.demo_mode or not settings.tinyfish_api_key:
         asyncio.create_task(_run_discover_mock(job.job_id))
@@ -141,13 +240,28 @@ async def discover(body: DiscoverRequest) -> DiscoverResponse:
     return DiscoverResponse(job_id=job.job_id)
 
 
+async def _persist(job_id: str) -> None:
+    """Mirror a job's in-memory state into Neon Postgres (best-effort)."""
+    if not get_settings().database_url:
+        return
+    try:
+        job = job_store.get_job(job_id)
+        if job is not None:
+            await db.save_job(job)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("persist job %s failed (non-fatal): %s", job_id, exc)
+
+
 async def _run_discover_mock(job_id: str) -> None:
     job_store.set_running(job_id)
+    await _persist(job_id)
     for step in DISCOVER_PROGRESS_STEPS:
         await asyncio.sleep(1)
         job_store.add_event(job_id, step)
+        await _persist(job_id)
     result = [c.model_dump() for c in MOCK_CANDIDATES]
     job_store.set_done_mock(job_id, result)
+    await _persist(job_id)
 
 
 # ---------------------------------------------------------------------------
@@ -163,10 +277,13 @@ async def _run_discover_mock(job_id: str) -> None:
 async def investigate(body: InvestigateRequest) -> InvestigateResponse:
     """
     Accepts an issue URL and a developer profile.
-    Returns a job_id immediately.
+    Returns a job_id immediately. The agent reads the issue, linked PRs,
+    commits and docs, then produces a personalised InvestigationReport that is
+    also persisted to Neon Object Storage.
     """
     settings = get_settings()
     job = job_store.create_job(JobKind.investigate)
+    await _persist(job.job_id)
 
     if settings.demo_mode or not settings.tinyfish_api_key:
         asyncio.create_task(_run_investigate_mock(job.job_id, body.issue_url, body.persona_id))
@@ -192,10 +309,13 @@ async def _run_investigate_mock(job_id: str, issue_url: str, persona_id: str | N
         saved = load_investigate_result(issue_url, persona_id)
         if saved is not None:
             job_store.set_running(job_id)
+            await _persist(job_id)
             for step in INVESTIGATE_PROGRESS_STEPS:
                 await asyncio.sleep(1)
                 job_store.add_event(job_id, step)
+                await _persist(job_id)
             job_store.set_done_cached(job_id, saved["result"], saved["generated_at"])
+            await _persist(job_id)
             return
 
     report = MOCK_REPORTS.get(issue_url)
@@ -206,13 +326,31 @@ async def _run_investigate_mock(job_id: str, issue_url: str, persona_id: str | N
             f"No mock report available for {issue_url!r}. "
             "Run scripts/prerun.py to generate saved results, or use one of the known demo URLs.",
         )
+        await _persist(job_id)
         return
 
     job_store.set_running(job_id)
+    await _persist(job_id)
     for step in INVESTIGATE_PROGRESS_STEPS:
         await asyncio.sleep(1)
         job_store.add_event(job_id, step)
-    job_store.set_done_mock(job_id, report.model_dump())
+        await _persist(job_id)
+
+    result = report.model_dump(mode="json")
+
+    # Persist the investigation report to Neon Object Storage.
+    if storage.is_configured():
+        try:
+            key = await asyncio.to_thread(
+                storage.put_json, f"reports/{job_id}.json", result
+            )
+            result = {**result, "storage_key": key}
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("storage upload failed (non-fatal): %s", exc)
+            result = {**result, "storage_key": None, "storage_error": str(exc)}
+
+    job_store.set_done_mock(job_id, result)
+    await _persist(job_id)
 
 
 # ---------------------------------------------------------------------------
@@ -256,10 +394,6 @@ def demo_inputs():
 # POST /investigate/batch
 # ---------------------------------------------------------------------------
 
-from pydantic import BaseModel, Field
-from typing import Optional
-
-
 class BatchInvestigateRequest(BaseModel):
     issue_urls: list[str] = Field(..., description="List of GitHub issue URLs to investigate in parallel")
     profile: Profile = Field(..., description="Developer profile used to personalise each report")
@@ -286,6 +420,7 @@ async def investigate_batch(body: BatchInvestigateRequest) -> BatchInvestigateRe
 
     for issue_url in body.issue_urls:
         job = job_store.create_job(JobKind.investigate)
+        await _persist(job.job_id)
         if settings.demo_mode or not settings.tinyfish_api_key:
             asyncio.create_task(_run_investigate_mock(job.job_id, issue_url, None))
         else:
@@ -388,7 +523,16 @@ def _sse_event(payload: dict) -> str:
     summary="Get the current status and result of a job",
 )
 async def get_job(job_id: str) -> JobStatus:
+    """
+    Returns the full JobStatus for the given job_id, including all events
+    and the final result once status is `done`. Falls back to Neon Postgres
+    when the job is no longer in the in-memory store (e.g. after a restart).
+    """
     job = job_store.get_job(job_id)
+    if job is None and get_settings().database_url:
+        persisted = await db.load_job(job_id)
+        if persisted is not None:
+            return persisted
     if job is None:
         raise HTTPException(status_code=404, detail=f"Job {job_id!r} not found")
     return job
